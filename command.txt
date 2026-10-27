@@ -1,0 +1,129 @@
+SETUP
+=====
+
+conda activate isaaclab
+cd /home/user/package/robomimic
+
+source env.sh
+bash setup.sh
+
+# robomimic 모듈이 없을 때 Isaac Lab 루트에서 한 번 실행
+cd /home/user/package/IsaacLab
+./isaaclab.sh -i robomimic
+cd /home/user/package/robomimic
+
+
+TELEOP PREVIEW
+==============
+
+python scripts/teleoperation/teleop_se3_agent.py \
+    --task Agibot-Toy2Box-RmpFlow-v0 \
+    --teleop_device keyboard \
+    --device cpu
+
+# SpaceMouse 사용 시: --teleop_device spacemouse
+
+
+RECORD DEMONSTRATIONS
+=====================
+
+python scripts/teleoperation/record_demos.py \
+    --task Agibot-Toy2Box-RmpFlow-v0 \
+    --teleop_device keyboard \
+    --device cpu \
+    --dataset_file ./datasets/toy2box_raw.hdf5 \
+    --num_demos 10
+
+# 기본값: eye/top/front viewport는 표시하지만 RGB는 HDF5에 저장하지 않음
+# 화면은 항상 세 카메라 표시. 일부 RGB만 수집: --record_camera_data --cameras eye top
+# 두 RGB camera observation도 저장하려면 위 명령에 다음 플래그 추가
+# --record_camera_data
+
+
+REPLAY RAW DATASET
+==================
+
+python scripts/teleoperation/replay_demos.py \
+    --task Agibot-Toy2Box-RmpFlow-v0 \
+    --device cpu \
+    --dataset_file ./datasets/toy2box_raw.hdf5
+
+
+ANNOTATE SUBTASKS
+=================
+
+python scripts/isaaclab_mimic/annotate_demos.py \
+    --task Agibot-Toy2Box-RmpFlow-Mimic-v0 \
+    --device cpu \
+    --auto \
+    --input_file ./datasets/toy2box_raw.hdf5 \
+    --output_file ./datasets/toy2box_annotated.hdf5
+
+
+GENERATE A SMALL CHECK DATASET
+==============================
+
+python scripts/isaaclab_mimic/generate_dataset.py \
+    --task Agibot-Toy2Box-RmpFlow-Mimic-v0 \
+    --device cpu \
+    --num_envs 10 \
+    --generation_num_trials 10 \
+    --input_file ./datasets/toy2box_annotated.hdf5 \
+    --output_file ./datasets/toy2box_generated_small.hdf5
+
+
+GENERATE THE TRAINING DATASET
+=============================
+
+python scripts/isaaclab_mimic/generate_dataset.py \
+    --task Agibot-Toy2Box-RmpFlow-Mimic-v0 \
+    --device cpu \
+    --headless \
+    --num_envs 10 \
+    --generation_num_trials 1000 \
+    --input_file ./datasets/toy2box_annotated.hdf5 \
+    --output_file ./datasets/toy2box_generated.hdf5
+
+
+TRAIN ROBOMIMIC BC
+==================
+
+python scripts/robomimic/train.py \
+    --task Agibot-Toy2Box-RmpFlow-v0 \
+    --algo bc \
+    --dataset ./datasets/toy2box_generated.hdf5
+
+
+PLAY A CHECKPOINT
+=================
+
+python scripts/robomimic/play.py \
+    --task Agibot-Toy2Box-RmpFlow-v0 \
+    --device cpu \
+    --num_rollouts 50 \
+    --checkpoint /ABSOLUTE/PATH/TO/model_epoch_XXXX.pth
+
+
+TRAIN ACT
+==========
+
+# IsaacLab conda 환경에서 최초 한 번 (카메라 사용 시 호환되는 torch/torchvision 필요)
+python -m pip install -e '.[act]'
+
+# 카메라 없이 학습: 이미지 데이터/인코더/임베딩을 사용하지 않음
+python scripts/act/train.py \
+    --dataset ./datasets/toy2box_raw.hdf5 \
+    --enable_cam False \
+    --seq_length 10 \
+    --output_dir ./logs/act_state
+
+# RGB를 수집한 데이터셋으로 세 카메라 학습
+python scripts/act/train.py \
+    --dataset ./datasets/toy2box_rgb.hdf5 \
+    --enable_cam True \
+    --cameras eye top front \
+    --seq_length 10 \
+    --output_dir ./logs/act_camera
+
+# --cameras는 eye/top/front 중 1~3개 지원. 생략하면 HDF5 RGB 관측 키를 자동 탐색.
+# 체크포인트: <output_dir>/latest.pt (매 epoch 갱신)

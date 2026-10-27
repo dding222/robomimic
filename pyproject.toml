@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agibot-toy2box-imitation"
+version = "0.1.0"
+description = "Agibot Toy2Box imitation-learning workspace for Isaac Lab"
+requires-python = ">=3.11"
+dependencies = [
+    "ipywidgets==8.1.5",
+    "tomli",
+]
+
+[project.optional-dependencies]
+act = ["torch>=2.2", "torchvision>=0.17", "einops>=0.7", "numpy", "h5py", "robomimic==0.4.0"]
+
+[tool.setuptools]
+package-dir = {"" = "source"}
+
+[tool.setuptools.packages.find]
+where = ["source"]
+
+[tool.setuptools.package-data]
+agibot_toy2box = ["agents/robomimic/*.json"]
+toy2box_act = ["LICENSE.Apache-2.0"]
