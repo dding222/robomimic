@@ -70,3 +70,20 @@ def spawn_view_cameras(names):
         cfg = camera_spawn_cfg()
         cfg.func("/World/envs/env_0" + spec["path"], cfg,
                  translation=spec["pos"], orientation=spec["rot"])
+
+
+def setup_camera_viewports(sensor_names):
+    """Display all three cameras independently of policy sensor selection."""
+    from isaacsim.core.utils.viewports import create_viewport_for_camera, set_active_viewport_camera
+
+    names = list(CAMERAS)
+    spawn_view_cameras([name for name in names if name not in sensor_names])
+    paths = ["/World/envs/env_0" + CAMERAS[name]["path"] for name in names]
+    set_active_viewport_camera(paths[0])
+    return [
+        create_viewport_for_camera(
+            viewport_name=f"{name.title()} Camera", camera_prim_path=path,
+            width=640, height=480, position_x=660 * index, position_y=40,
+        )
+        for index, (name, path) in enumerate(zip(names[1:], paths[1:]), start=1)
+    ]

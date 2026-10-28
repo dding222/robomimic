@@ -144,27 +144,15 @@ logger = logging.getLogger(__name__)
 # camera configuration
 #########################
 
-from agibot_toy2box.cameras import CAMERAS, add_camera_observations, spawn_view_cameras
+from agibot_toy2box.cameras import add_camera_observations, setup_camera_viewports as create_camera_viewports
 
 TOY2BOX_TASK_ID = "Agibot-Toy2Box-RmpFlow-v0"
 
 
 def setup_camera_viewports():
     """Always display eye, top, and front, independently of RGB recording."""
-    from isaacsim.core.utils.viewports import create_viewport_for_camera, set_active_viewport_camera
-
-    names = list(CAMERAS)
     recorded = args_cli.cameras if args_cli.record_camera_data else []
-    spawn_view_cameras([name for name in names if name not in recorded])
-    paths = ["/World/envs/env_0" + CAMERAS[name]["path"] for name in names]
-    set_active_viewport_camera(paths[0])
-    return [
-        create_viewport_for_camera(
-            viewport_name=f"{name.title()} Camera", camera_prim_path=path,
-            width=640, height=480, position_x=660 * index, position_y=40,
-        )
-        for index, (name, path) in enumerate(zip(names[1:], paths[1:]), start=1)
-    ]
+    return create_camera_viewports(recorded)
 
 
 class RateLimiter:

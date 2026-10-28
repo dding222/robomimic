@@ -91,7 +91,10 @@ TRAIN ROBOMIMIC BC
 python scripts/robomimic/train.py \
     --task Agibot-Toy2Box-RmpFlow-v0 \
     --algo bc \
-    --dataset ./datasets/toy2box_generated.hdf5
+    --dataset ./datasets/toy2box_generated.hdf5 \
+    --output_dir ./output/gen_
+
+# 저장: <output_dir>/<experiment_name>/<timestamp>/{models,logs,videos}
 
 
 PLAY A CHECKPOINT
@@ -126,4 +129,18 @@ python scripts/act/train.py \
     --output_dir ./logs/act_camera
 
 # --cameras는 eye/top/front 중 1~3개 지원. 생략하면 HDF5 RGB 관측 키를 자동 탐색.
-# 체크포인트: <output_dir>/latest.pt (매 epoch 갱신)
+# 기본 --epochs 1000. 평균 지표: <output_dir>/metrics.csv (매 epoch 기록)
+# 체크포인트: model_epoch_100.pt, model_epoch_200.pt, ... (100 epoch마다 + 마지막)
+# latest.pt는 체크포인트 저장 시 갱신
+
+
+PLAY ACT
+=========
+
+python scripts/act/play.py \
+    --task Agibot-Toy2Box-RmpFlow-v0 \
+    --checkpoint ./logs/act_state/latest.pt \
+    --device cpu \
+    --num_rollouts 10
+
+# 화면 없이 평가: --headless 추가. RGB 센서는 체크포인트 설정으로 자동 활성화.

@@ -50,6 +50,15 @@ action 정규화, tanh 또는 clipping을 추가하지 않는다. 이미 정규�
 `select_action()`은 `(B, 7)`을 반환한다. 기본적으로 K개를 큐에 넣고 한 스텝씩 실행한다.
 환경을 리셋할 때 `policy.reset()`을 호출해 action 큐를 비운다.
 이 체크포인트는 별도 ACT 형식이므로 기존 `scripts/robomimic/play.py`로 로드하지 않는다.
+ACT 재생은 전용 스크립트를 사용한다. 카메라와 action chunk 설정은 체크포인트에서 자동 복원한다.
+GUI에서는 Eye, Top, Front 세 뷰포인트를 모두 표시하며 `--headless`로 화면 없이 평가할 수 있다.
+
+```bash
+python scripts/act/play.py \
+    --checkpoint logs/act_state/latest.pt \
+    --device cpu \
+    --num_rollouts 10
+```
 
 ```python
 from toy2box_act import ACTPolicy
@@ -65,5 +74,11 @@ batch = prepare_observations(env_obs, state_keys, camera_keys, "cpu")
 action = policy.select_action(batch)  # (num_envs, 7), env.step(action)에 전달
 ```
 
-매 epoch 후 `latest.pt`에 모델, 구조 설정, 관측 순서, optimizer 상태를 저장한다.
+기본 학습 길이는 1,000 epoch이며 `--epochs`로 변경한다.
+매 epoch의 샘플 수 가중 평균 `loss`, `l1`, `kl`을 `metrics.csv`에 기록하고 즉시 flush한다.
+100 epoch마다 `model_epoch_100.pt`, `model_epoch_200.pt`처럼 체크포인트를 보존한다.
+마지막 epoch는 100의 배수가 아니어도 저장하며, 저장 시 `latest.pt`도 갱신한다.
+체크포인트에는 모델, 구조 설정, 관측 순서, optimizer 상태와 해당 epoch의 지표가 들어간다.
+중간 중단 시 CSV에는 완료된 epoch까지 남고, 모델은 마지막 체크포인트 시점까지 남는다.
+기존 `metrics.csv`가 있는 출력 폴더는 덮어쓰지 않으므로 새 학습에는 새 `--output_dir`를 사용한다.
 자동 검증 분할이나 rollout 평가는 이 학습 스크립트에 포함하지 않았다.

@@ -37,7 +37,7 @@ Args:
     task: Name of the environment.
     name: If provided, override the experiment name defined in the config.
     dataset: If provided, override the dataset path defined in the config.
-    log_dir: Directory to save logs.
+    output_dir: Root directory to save training results.
     normalize_training_actions: Whether to normalize actions in the training data.
 
 This file has been modified from the original robomimic version to integrate with IsaacLab.
@@ -396,7 +396,8 @@ def main(args: argparse.Namespace):
         config.train.num_epochs = args.epochs
 
     # change location of experiment directory
-    config.train.output_dir = os.path.abspath(os.path.join("./logs", args.log_dir, args.task))
+    output_dir = args.output_dir or os.path.join("./logs", "robomimic", args.task)
+    config.train.output_dir = os.path.abspath(os.path.expanduser(output_dir))
 
     log_dir, ckpt_dir, video_dir = TrainUtils.get_exp_dir(config)
 
@@ -438,7 +439,10 @@ if __name__ == "__main__":
 
     parser.add_argument("--task", type=str, default=None, help="Name of the task.")
     parser.add_argument("--algo", type=str, default=None, help="Name of the algorithm.")
-    parser.add_argument("--log_dir", type=str, default="robomimic", help="Path to log directory")
+    parser.add_argument(
+        "--output_dir", type=str, default=None,
+        help="Root directory for training results. Default: ./logs/robomimic/<task>.",
+    )
     parser.add_argument("--normalize_training_actions", action="store_true", default=False, help="Normalize actions")
     parser.add_argument(
         "--epochs",
