@@ -130,7 +130,7 @@ python scripts/act/train.py \
 
 # --cameras는 eye/top/front 중 1~3개 지원. 생략하면 HDF5 RGB 관측 키를 자동 탐색.
 # 기본 --epochs 1000. 평균 지표: <output_dir>/metrics.csv (매 epoch 기록)
-# 체크포인트: model_epoch_100.pt, model_epoch_200.pt, ... (100 epoch마다 + 마지막)
+# 체크포인트: model_epoch_1000.pt, model_epoch_2000.pt, ... (1000 epoch마다 + 마지막)
 # latest.pt는 체크포인트 저장 시 갱신
 
 

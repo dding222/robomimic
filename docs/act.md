@@ -76,8 +76,8 @@ action = policy.select_action(batch)  # (num_envs, 7), env.step(action)에 전�
 
 기본 학습 길이는 1,000 epoch이며 `--epochs`로 변경한다.
 매 epoch의 샘플 수 가중 평균 `loss`, `l1`, `kl`을 `metrics.csv`에 기록하고 즉시 flush한다.
-100 epoch마다 `model_epoch_100.pt`, `model_epoch_200.pt`처럼 체크포인트를 보존한다.
-마지막 epoch는 100의 배수가 아니어도 저장하며, 저장 시 `latest.pt`도 갱신한다.
+1,000 epoch마다 `model_epoch_1000.pt`, `model_epoch_2000.pt`처럼 체크포인트를 보존한다.
+마지막 epoch는 1,000의 배수가 아니어도 저장하며, 저장 시 `latest.pt`도 갱신한다.
 체크포인트에는 모델, 구조 설정, 관측 순서, optimizer 상태와 해당 epoch의 지표가 들어간다.
 중간 중단 시 CSV에는 완료된 epoch까지 남고, 모델은 마지막 체크포인트 시점까지 남는다.
 기존 `metrics.csv`가 있는 출력 폴더는 덮어쓰지 않으므로 새 학습에는 새 `--output_dir`를 사용한다.
