@@ -6,6 +6,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 import torch
+from torch.utils.data import default_collate
 from robomimic.utils import obs_utils as ObsUtils
 from robomimic.utils.dataset import SequenceDataset
 
@@ -15,6 +16,11 @@ from robomimic.utils.dataset import SequenceDataset
 #########################
 
 CAMERA_KEYS = {"eye": "hand_eye_cam", "top": "top_cam", "front": "front_cam"}
+
+
+def rnn_train_config():
+    path = Path(__file__).parents[1] / "agibot_toy2box/agents/robomimic/bc_rnn_low_dim.json"
+    return json.loads(path.read_text())["train"]
 
 
 def inspect_dataset(path, enable_cam=False, camera_keys=None):
@@ -64,22 +70,60 @@ def inspect_dataset(path, enable_cam=False, camera_keys=None):
 # sequence preprocessing
 #########################
 
-def make_dataset(path, state_keys, camera_keys, seq_length=10):
+class ACTSequenceDataset(SequenceDataset):
+    def get_obs_sequence_from_demo(self, demo_id, index_in_demo, keys, num_frames_to_stack=0,
+                                   seq_length=1, prefix="obs"):
+        return super().get_obs_sequence_from_demo(
+            demo_id, index_in_demo, keys, num_frames_to_stack=num_frames_to_stack,
+            seq_length=1, prefix=prefix,
+        )
+
+
+def make_dataset(path, state_keys, camera_keys, action_chunk=10, hdf5_normalize_obs=None):
     ObsUtils.initialize_obs_utils_with_obs_specs({"obs": {"low_dim": state_keys, "rgb": camera_keys}})
-    return SequenceDataset(
+    if hdf5_normalize_obs is None:
+        hdf5_normalize_obs = rnn_train_config()["hdf5_normalize_obs"]
+    return ACTSequenceDataset(
         hdf5_path=str(path),
         obs_keys=state_keys + camera_keys,
         dataset_keys=["actions"],
         frame_stack=1,
-        seq_length=seq_length,
+        seq_length=action_chunk,
         pad_frame_stack=True,
         pad_seq_length=True,
         get_pad_mask=True,
         hdf5_cache_mode="low_dim",
         hdf5_use_swmr=True,
-        hdf5_normalize_obs=False,
+        hdf5_normalize_obs=hdf5_normalize_obs,
         load_next_obs=False,
     )
+
+
+def normalization_stats(dataset, state_keys, camera_keys, normalize_actions=False):
+    """Reuse SequenceDataset statistics and local BC's single global action min/max."""
+    result = {}
+    if dataset.hdf5_normalize_obs:
+        obs_stats = dataset.get_obs_normalization_stats()
+        result["state"] = {
+            field: torch.cat([torch.as_tensor(obs_stats[key][field]).flatten() for key in state_keys])
+            for field in ("mean", "std")
+        }
+        result["images"] = {
+            key: {field: torch.as_tensor(obs_stats[key][field][0]) for field in ("mean", "std")}
+            for key in camera_keys
+        }
+    if normalize_actions:
+        action_min, action_max = float("inf"), float("-inf")
+        for demo in dataset.demos:
+            actions = dataset.get_dataset_for_ep(demo, "actions")[:]
+            if not np.isfinite(actions).all():
+                raise ValueError(f"Non-finite actions in {demo}.")
+            action_min = min(action_min, float(actions.min()))
+            action_max = max(action_max, float(actions.max()))
+        if action_max <= action_min:
+            raise ValueError("Action normalization requires nonconstant data.")
+        result["action"] = {"min": action_min, "max": action_max}
+    return result
 
 
 def prepare_observations(obs, state_keys, camera_keys, device):
@@ -98,3 +142,16 @@ def prepare_batch(sample, state_keys, camera_keys, device):
     batch["action"] = sample["actions"].to(device=device, dtype=torch.float32)
     batch["action_is_pad"] = ~sample["pad_mask"].squeeze(-1).to(device=device, dtype=torch.bool)
     return batch
+
+
+def collate_batch(samples, state_keys, camera_keys):
+    return prepare_batch(default_collate(samples), state_keys, camera_keys, "cpu")
+
+
+def batch_to_device(batch, device):
+    non_blocking = torch.device(device).type == "cuda"
+    return {
+        key: ([image.to(device, non_blocking=non_blocking) for image in value]
+              if key == "observation.images" else value.to(device, non_blocking=non_blocking))
+        for key, value in batch.items()
+    }

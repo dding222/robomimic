@@ -32,5 +32,17 @@
 - License copy: `source/toy2box_act/LICENSE.Apache-2.0`
 - Destination: `source/toy2box_act/`
 - Adaptations: independent PyTorch policy/configuration, optional 0–3 cameras, state-only forward,
-  raw 7-dimensional Toy2Box action output, valid-action masked L1 + KL loss, robomimic SequenceDataset adapter.
+  raw 7-dimensional Toy2Box action output and robomimic SequenceDataset adapter.
+- Transformer/CVAE/ResNet computation, padded masked L1 mean, KL loss and temporal ensemble follow the local ACT source.
+  The camera backbone uses the original ResNet18 ImageNet initialization; state-only training creates no backbone.
 - The local LeRobot source includes custom debug-output changes; these are omitted from this adapter.
+- Temporal ensemble: `ACTTemporalEnsembler` copied unchanged from that local ACT source.
+  New training defaults to coefficient 0.01 and one action per observation; legacy checkpoints keep their previous behavior.
+- Normalization: matches local robomimic BC-RNN options, using SequenceDataset observation statistics
+  and the BC training script's global scalar action min/max. Defaults follow BC-RNN (observation normalization off,
+  action normalization opt-in). Statistics are saved in ACT checkpoints and restored at inference.
+- Training follows LeRobot's TF32, cuDNN benchmark, optional AMP/GradScaler and AdamW update settings.
+  The adapter prepares current observations on CPU before DataLoader memory pinning and asynchronous CUDA transfer.
+  Action sampling, episode boundaries and padding still use robomimic SequenceDataset.
+  Training uses LeRobot's step-based schedule: 100,000 total updates, logging every 200 steps,
+  and checkpointing every 1,000 steps plus the last step. The DataLoader cycle follows the local LeRobot implementation.

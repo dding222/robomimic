@@ -3,6 +3,7 @@
 """ACT configuration adapted from the local LeRobot implementation."""
 
 from dataclasses import dataclass, field
+import math
 
 
 #########################
@@ -20,10 +21,13 @@ class ACTConfig:
     action_dim: int = 7
     enable_cam: bool = False
     camera_keys: list[str] = field(default_factory=list)
-    seq_length: int = 10
+    action_chunk: int = 10
     n_action_steps: int = 10
+    temporal_ensemble_coeff: float | None = None
+    hdf5_normalize_obs: bool = False
+    normalize_training_actions: bool = False
     vision_backbone: str = "resnet18"
-    pretrained_backbone_weights: str | None = None
+    pretrained_backbone_weights: str | None = "ResNet18_Weights.IMAGENET1K_V1"
     replace_final_stride_with_dilation: bool = False
     pre_norm: bool = False
     dim_model: int = 512
@@ -47,14 +51,26 @@ class ACTConfig:
             raise ValueError("Camera keys require --enable_cam True.")
         if len(set(self.camera_keys)) != len(self.camera_keys):
             raise ValueError("Camera keys must be unique.")
-        if not 1 <= self.n_action_steps <= self.seq_length:
-            raise ValueError("Require 1 <= n_action_steps <= seq_length.")
+        if not 1 <= self.n_action_steps <= self.action_chunk:
+            raise ValueError("Require 1 <= n_action_steps <= action_chunk.")
+        if self.temporal_ensemble_coeff is not None:
+            if not math.isfinite(self.temporal_ensemble_coeff):
+                raise ValueError("temporal_ensemble_coeff must be finite.")
+            if self.n_action_steps != 1:
+                raise ValueError("Temporal ensemble requires n_action_steps=1 to predict at every step.")
         if self.dim_model % 4 or self.dim_model % self.n_heads:
             raise ValueError("dim_model must be divisible by 4 and n_heads.")
 
+    @classmethod
+    def from_dict(cls, values):
+        values = dict(values)
+        if "seq_length" in values:
+            values.setdefault("action_chunk", values.pop("seq_length"))
+        return cls(**values)
+
     @property
     def chunk_size(self):
-        return self.seq_length
+        return self.action_chunk
 
     @property
     def robot_state_feature(self):

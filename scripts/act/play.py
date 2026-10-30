@@ -17,6 +17,11 @@ parser.add_argument("--horizon", type=int, default=800)
 parser.add_argument("--num_rollouts", type=int, default=1)
 parser.add_argument("--seed", type=int, default=101)
 parser.add_argument("--disable_fabric", action="store_true")
+ensemble_args = parser.add_mutually_exclusive_group()
+ensemble_args.add_argument("--temporal_ensemble_coeff", type=float, default=None,
+                           help="Override the checkpoint and enable temporal ensemble, e.g. 0.01.")
+ensemble_args.add_argument("--disable_temporal_ensemble", action="store_true",
+                           help="Disable temporal ensemble for this playback.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 if args_cli.horizon < 1 or args_cli.num_rollouts < 1:
@@ -76,8 +81,14 @@ def rollout(policy, env, state_keys, success_term):
 def main():
     if args_cli.task != "Agibot-Toy2Box-RmpFlow-v0":
         raise ValueError("This ACT player supports Agibot-Toy2Box-RmpFlow-v0.")
-    config = ACTConfig(**checkpoint["model"])
-    policy = ACTPolicy(config).to(args_cli.device)
+    model_config = dict(checkpoint["model"])
+    if args_cli.temporal_ensemble_coeff is not None:
+        model_config["temporal_ensemble_coeff"] = args_cli.temporal_ensemble_coeff
+        model_config["n_action_steps"] = 1
+    elif args_cli.disable_temporal_ensemble:
+        model_config["temporal_ensemble_coeff"] = None
+    config = ACTConfig.from_dict(model_config)
+    policy = ACTPolicy(config, checkpoint.get("normalization")).to(args_cli.device)
     policy.load_state_dict(checkpoint.pop("state_dict"))
     policy.eval()
     state_keys = checkpoint["state_keys"]
@@ -104,8 +115,11 @@ def main():
     try:
         if not args_cli.headless:
             views = setup_camera_viewports(sensor_names)
-        print(f"ACT epoch={checkpoint.get('epoch', 'unknown')}, cameras={config.camera_keys}, "
-              f"chunk={config.seq_length}, n_action_steps={config.n_action_steps}", flush=True)
+        progress = (f"step={checkpoint['step']}" if "step" in checkpoint
+                    else f"epoch={checkpoint.get('epoch', 'unknown')}")
+        print(f"ACT {progress}, cameras={config.camera_keys}, "
+              f"action_chunk={config.action_chunk}, n_action_steps={config.n_action_steps}, "
+              f"temporal_ensemble={config.temporal_ensemble_coeff}", flush=True)
         results = []
         for trial in range(args_cli.num_rollouts):
             if not simulation_app.is_running():

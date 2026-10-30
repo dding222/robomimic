@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-act = ["torch>=2.2", "torchvision>=0.17", "einops>=0.7", "numpy", "h5py", "robomimic==0.4.0"]
+act = ["torch>=2.3", "torchvision>=0.18", "einops>=0.7", "numpy", "h5py", "robomimic==0.4.0"]
 
 [tool.setuptools]
 package-dir = {"" = "source"}

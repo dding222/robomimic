@@ -56,6 +56,7 @@ python scripts/isaaclab_mimic/annotate_demos.py \
     --task Agibot-Toy2Box-RmpFlow-Mimic-v0 \
     --device cpu \
     --auto \
+    --headless \
     --input_file ./datasets/toy2box_raw.hdf5 \
     --output_file ./datasets/toy2box_annotated.hdf5
 
@@ -91,6 +92,7 @@ TRAIN ROBOMIMIC BC
 python scripts/robomimic/train.py \
     --task Agibot-Toy2Box-RmpFlow-v0 \
     --algo bc \
+    --epochs 1000 \
     --dataset ./datasets/toy2box_generated.hdf5 \
     --output_dir ./output/gen_
 
@@ -102,8 +104,8 @@ PLAY A CHECKPOINT
 
 python scripts/robomimic/play.py \
     --task Agibot-Toy2Box-RmpFlow-v0 \
-    --device cpu \
-    --num_rollouts 50 \
+    --device cuda \
+    --num_rollouts 20 \
     --checkpoint /ABSOLUTE/PATH/TO/model_epoch_XXXX.pth
 
 
@@ -117,20 +119,28 @@ python -m pip install -e '.[act]'
 python scripts/act/train.py \
     --dataset ./datasets/toy2box_raw.hdf5 \
     --enable_cam False \
-    --seq_length 10 \
-    --output_dir ./logs/act_state
+    --action_chunk 10 \
+    --seed 101 \
+    --steps 100000 \
+    --log_freq 100 \
+    --output_dir ./output/act_state
 
 # RGB를 수집한 데이터셋으로 세 카메라 학습
 python scripts/act/train.py \
     --dataset ./datasets/toy2box_rgb.hdf5 \
     --enable_cam True \
     --cameras eye top front \
-    --seq_length 10 \
-    --output_dir ./logs/act_camera
+    --action_chunk 10 \
+    --output_dir ./output/act_camera
 
 # --cameras는 eye/top/front 중 1~3개 지원. 생략하면 HDF5 RGB 관측 키를 자동 탐색.
-# 기본 --epochs 1000. 평균 지표: <output_dir>/metrics.csv (매 epoch 기록)
-# 체크포인트: model_epoch_1000.pt, model_epoch_2000.pt, ... (1000 epoch마다 + 마지막)
+# 새 학습은 temporal ensemble 계수 0.01, n_action_steps=1이 기본
+# 끄기: --temporal_ensemble_coeff None (이때 n_action_steps 기본값은 action_chunk)
+# 정규화는 RNN 기본 설정을 따름. 옵션: --hdf5_normalize_obs True --normalize_training_actions
+# --batch_size 100, --num_workers 4가 현재 기본값. --use_amp True로 원본의 선택적 AMP 활성화
+# 기본 --steps 100000. 이전 --epoch/--epochs 대신 --steps 사용
+# 평균 지표: <output_dir>/metrics.csv (--log_freq 200 step마다 + 마지막)
+# 체크포인트: model_step_1000.pt, model_step_2000.pt, ... (--save_freq 1000 step마다 + 마지막)
 # latest.pt는 체크포인트 저장 시 갱신
 
 
@@ -139,8 +149,11 @@ PLAY ACT
 
 python scripts/act/play.py \
     --task Agibot-Toy2Box-RmpFlow-v0 \
-    --checkpoint ./logs/act_state/latest.pt \
+    --checkpoint ./output/act_state/latest.pt \
     --device cpu \
-    --num_rollouts 10
+    --headless \
+    --num_rollouts 20
 
 # 화면 없이 평가: --headless 추가. RGB 센서는 체크포인트 설정으로 자동 활성화.
+# 기존 ACT 모델에 ensemble 적용: --temporal_ensemble_coeff 0.01 추가
+# ensemble 끄기: --disable_temporal_ensemble
