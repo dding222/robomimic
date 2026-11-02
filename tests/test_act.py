@@ -60,6 +60,16 @@ class ACTTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_default_and_legacy_state_observations(self):
+        keys, cams, dim = inspect_dataset(self.path)
+        self.assertEqual(keys, ["eef_pos", "eef_quat", "gripper_pos", "toy_truck_positions",
+                                "toy_truck_orientations", "box_positions", "box_orientations"])
+        self.assertEqual(dim, 14)  # The fixture has two values per observation key.
+        self.assertEqual(cams, [])
+        legacy_keys, _, legacy_dim = inspect_dataset(self.path, state_keys=STATE_KEYS)
+        self.assertEqual(legacy_keys, STATE_KEYS)
+        self.assertEqual(legacy_dim, 18)
+
     def test_state_only_padding_and_raw_actions(self):
         keys, cams, dim = inspect_dataset(self.path)
         dataset = make_dataset(self.path, keys, cams, action_chunk=4)
@@ -98,7 +108,7 @@ class ACTTests(unittest.TestCase):
 
     def test_current_observation_adapter_matches_rnn_sequences(self):
         with h5py.File(self.path, "r+") as handle:
-            handle["data/demo_0/obs/joint_pos"][:] = np.arange(6, dtype=np.float32).reshape(3, 2)
+            handle["data/demo_0/obs/eef_pos"][:] = np.arange(6, dtype=np.float32).reshape(3, 2)
         keys, cams, _ = inspect_dataset(self.path, True, ["top"])
         dataset = make_dataset(self.path, keys, cams, action_chunk=4, hdf5_normalize_obs=False)
         baseline = SequenceDataset(

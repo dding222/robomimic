@@ -17,6 +17,13 @@ parser.add_argument("--horizon", type=int, default=800)
 parser.add_argument("--num_rollouts", type=int, default=1)
 parser.add_argument("--seed", type=int, default=101)
 parser.add_argument("--disable_fabric", action="store_true")
+parser.add_argument("--check_observations", action="store_true",
+                    help="Compare full episodes for --num_rollouts dataset demos without applying policy actions.")
+observation_steps = parser.add_mutually_exclusive_group()
+observation_steps.add_argument("--check_obs_step", type=int, default=None,
+                               help="Compare only this observation index in each selected demo; default is all steps.")
+observation_steps.add_argument("--check_obs_all_steps", action="store_true",
+                               help="Compare every observation in each selected demo; enables --check_observations.")
 ensemble_args = parser.add_mutually_exclusive_group()
 ensemble_args.add_argument("--temporal_ensemble_coeff", type=float, default=None,
                            help="Override the checkpoint and enable temporal ensemble, e.g. 0.01.")
@@ -24,8 +31,12 @@ ensemble_args.add_argument("--disable_temporal_ensemble", action="store_true",
                            help="Disable temporal ensemble for this playback.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
+args_cli.check_observations = (args_cli.check_observations or args_cli.check_obs_all_steps
+                               or args_cli.check_obs_step is not None)
 if args_cli.horizon < 1 or args_cli.num_rollouts < 1:
     parser.error("--horizon and --num_rollouts must be positive")
+if args_cli.check_obs_step is not None and args_cli.check_obs_step < 0:
+    parser.error("--check_obs_step must be nonnegative")
 
 import torch
 
@@ -50,8 +61,91 @@ from toy2box_act.dataset import prepare_observations
 
 
 #########################
+# observation check
+#########################
+
+@torch.inference_mode()
+def check_observations(policy, env, state_keys, demo_name):
+    import h5py
+
+    with h5py.File(checkpoint["dataset"], "r") as handle:
+        demo = handle[f"data/{demo_name}"]
+        length = len(demo["actions"])
+        all_steps = args_cli.check_obs_step is None
+        if not all_steps and args_cli.check_obs_step >= length:
+            raise ValueError(f"--check_obs_step exceeds {demo_name} length ({length}).")
+        steps = range(length) if all_steps else [args_cli.check_obs_step]
+        maximum_errors = {key: 0.0 for key in state_keys}
+        mismatch_counts = {key: 0 for key in state_keys}
+        first_mismatches = {}
+        input_error = 0.0
+        input_mismatches = 0
+        failed_steps = 0
+        print(f"Observation comparison: {demo_name}, episode_steps={length}, "
+              f"checking={len(steps)} observation(s), dataset={checkpoint['dataset']}", flush=True)
+        for checked, step in enumerate(steps, 1):
+            if not simulation_app.is_running():
+                raise RuntimeError("Observation check interrupted before completion.")
+            group = demo["initial_state"] if step == 0 else demo["states"]
+            state_index = 0 if step == 0 else step - 1
+            state = {
+                kind: {
+                    asset: {key: torch.as_tensor(value[state_index:state_index + 1], device=env.device)
+                            for key, value in fields.items()}
+                    for asset, fields in assets.items()
+                }
+                for kind, assets in group.items()
+            }
+            expected = {key: torch.as_tensor(demo["obs"][key][step:step + 1], device=env.device)
+                        for key in state_keys}
+            obs, _ = env.reset_to(state, env_ids=None, is_relative=True)
+            actual = obs["policy"]
+            matched = True
+            for key in state_keys:
+                if actual[key].shape != expected[key].shape:
+                    raise ValueError(f"{key}: runtime shape {actual[key].shape}, dataset shape {expected[key].shape}.")
+                error = (actual[key] - expected[key]).abs().max().item()
+                if not np.isfinite(error):
+                    error = float("inf")
+                maximum_errors[key] = max(maximum_errors[key], error)
+                if error > 1e-4:
+                    matched = False
+                    mismatch_counts[key] += 1
+                    if key not in first_mismatches:
+                        first_mismatches[key] = step
+                        print(f"First mismatch: {demo_name}, {key}, step={step}, max_abs_diff={error:.8g}")
+                        print(f"  dataset={expected[key].tolist()}\n  runtime={actual[key].tolist()}")
+            actual_state = prepare_observations(actual, state_keys, [], env.device)["observation.state"]
+            expected_state = prepare_observations(expected, state_keys, [], env.device)["observation.state"]
+            if policy.config.hdf5_normalize_obs:
+                actual_state = policy.normalizer.state(actual_state)
+                expected_state = policy.normalizer.state(expected_state)
+            error = (actual_state - expected_state).abs().max().item()
+            if not np.isfinite(error):
+                error = float("inf")
+            input_error = max(input_error, error)
+            input_mismatches += int(error > 1e-4)
+            failed_steps += int(not matched or error > 1e-4)
+            if all_steps and checked % 100 == 0:
+                print(f"{demo_name}: checked {checked}/{len(steps)} observations", flush=True)
+    for key in state_keys:
+        print(f"{key}: max_abs_diff={maximum_errors[key]:.8g}, "
+              f"mismatched_steps={mismatch_counts[key]}/{len(steps)}, "
+              f"first_mismatch={first_mismatches.get(key, 'none')}")
+    print(f"ACT state input: shape={tuple(actual_state.shape)}, max_abs_diff={input_error:.8g}, "
+          f"mismatched_steps={input_mismatches}/{len(steps)}")
+    print(f"Observation check: {'MATCHED' if failed_steps == 0 else 'MISMATCH'}, "
+          f"matched_steps={len(steps) - failed_steps}/{len(steps)} (tolerance=1e-4). RGB is not compared.")
+    return {
+        "demo": demo_name, "matched": failed_steps == 0,
+        "matched_steps": len(steps) - failed_steps, "checked_steps": len(steps),
+    }
+
+
+#########################
 # rollout
 #########################
+
 
 @torch.inference_mode()
 def rollout(policy, env, state_keys, success_term):
@@ -113,6 +207,28 @@ def main():
     env = gym.make(args_cli.task, cfg=env_cfg).unwrapped
     views = []
     try:
+        if args_cli.check_observations:
+            import h5py
+
+            with h5py.File(checkpoint["dataset"], "r") as handle:
+                demo_names = sorted(handle["data"], key=lambda name: int(name.rsplit("_", 1)[1]))
+            if args_cli.num_rollouts > len(demo_names):
+                raise ValueError(f"Requested {args_cli.num_rollouts} observation checks, "
+                                 f"but the dataset has {len(demo_names)} demos.")
+            results = []
+            for trial, demo_name in enumerate(demo_names[:args_cli.num_rollouts], 1):
+                print(f"Starting observation check {trial}/{args_cli.num_rollouts}: {demo_name}", flush=True)
+                result = check_observations(policy, env, state_keys, demo_name)
+                results.append(result)
+                print(f"Trial {trial}/{args_cli.num_rollouts}: demo={demo_name}, "
+                      f"observation_check={'MATCHED' if result['matched'] else 'MISMATCH'}, "
+                      f"matched_steps={result['matched_steps']}/{result['checked_steps']}", flush=True)
+            matched = sum(result["matched"] for result in results)
+            matched_steps = sum(result["matched_steps"] for result in results)
+            checked_steps = sum(result["checked_steps"] for result in results)
+            print(f"Observation summary: matched_episodes={matched}/{len(results)}, "
+                  f"matched_steps={matched_steps}/{checked_steps}", flush=True)
+            return
         if not args_cli.headless:
             views = setup_camera_viewports(sensor_names)
         progress = (f"step={checkpoint['step']}" if "step" in checkpoint

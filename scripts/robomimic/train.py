@@ -37,7 +37,7 @@ Args:
     task: Name of the environment.
     name: If provided, override the experiment name defined in the config.
     dataset: If provided, override the dataset path defined in the config.
-    output_dir: Root directory to save training results.
+    output_dir: Directory to save models, configuration and logs directly.
     normalize_training_actions: Whether to normalize actions in the training data.
 
 This file has been modified from the original robomimic version to integrate with IsaacLab.
@@ -57,11 +57,13 @@ import argparse
 import importlib
 import json
 import os
+import random
 import shutil
 import sys
 import time
 import traceback
 from collections import OrderedDict
+from pathlib import Path
 
 import gymnasium as gym
 import h5py
@@ -80,6 +82,10 @@ from torch.utils.data import DataLoader
 
 import isaaclab_tasks  # noqa: F401
 import agibot_toy2box  # noqa: F401
+from agibot_toy2box.rnn_checkpoint import (
+    get_output_dirs, load_resume_checkpoint, restore_training_state, save_training_checkpoint,
+)
+from agibot_toy2box.rnn_observations import collate_with_eef_to_toy, eef_to_toy_normalization_stats
 import isaaclab_tasks.manager_based.locomanipulation.pick_place  # noqa: F401
 import isaaclab_tasks.manager_based.manipulation.pick_place  # noqa: F401
 
@@ -130,7 +136,7 @@ def normalize_hdf5_actions(config: Config, log_dir: str) -> str:
     return normalized_path
 
 
-def train(config: Config, device: str, log_dir: str, ckpt_dir: str, video_dir: str):
+def train(config: Config, device: str, log_dir: str, ckpt_dir: str, resume_checkpoint=None):
     """Train a model using the algorithm specified in config.
 
     Args:
@@ -138,11 +144,12 @@ def train(config: Config, device: str, log_dir: str, ckpt_dir: str, video_dir: s
         device: PyTorch device to use for training.
         log_dir: Directory to save logs.
         ckpt_dir: Directory to save checkpoints.
-        video_dir: Directory to save videos.
     """
     # first set seeds
     np.random.seed(config.train.seed)
     torch.manual_seed(config.train.seed)
+    random.seed(config.train.seed)
+    start_epoch = resume_checkpoint["epoch"] if resume_checkpoint is not None else 0
 
     print("\n============= New Training Run with Config =============")
     print(config)
@@ -150,7 +157,6 @@ def train(config: Config, device: str, log_dir: str, ckpt_dir: str, video_dir: s
 
     print(f">>> Saving logs into directory: {log_dir}")
     print(f">>> Saving checkpoints into directory: {ckpt_dir}")
-    print(f">>> Saving videos into directory: {video_dir}")
 
     if config.experiment.logging.terminal_output_to_txt:
         # log stdout and stderr to a text file
@@ -169,9 +175,33 @@ def train(config: Config, device: str, log_dir: str, ckpt_dir: str, video_dir: s
     # load basic metadata from training file
     print("\n============= Loaded Environment Metadata =============")
     env_meta = FileUtils.get_env_metadata_from_dataset(dataset_path=config.train.data)
+    use_eef_to_toy = "eef_to_toy" in config.all_obs_keys
+    dataset_obs_keys = [key for key in config.all_obs_keys if key != "eef_to_toy"]
     shape_meta = FileUtils.get_shape_metadata_from_dataset(
-        dataset_path=config.train.data, all_obs_keys=config.all_obs_keys, verbose=True
+        dataset_path=config.train.data, all_obs_keys=dataset_obs_keys, verbose=True
     )
+    if use_eef_to_toy:
+        for key in ("toy_truck_positions", "eef_pos"):
+            if shape_meta["all_shapes"].get(key) != [3]:
+                raise ValueError(f"eef_to_toy requires the 3D observation {key}.")
+        shape_meta["all_shapes"]["eef_to_toy"] = [3]
+        shape_meta["all_shapes"] = OrderedDict(sorted(shape_meta["all_shapes"].items()))
+        shape_meta["all_obs_keys"] = list(config.all_obs_keys)
+        print("Derived obs: eef_to_toy = toy_truck_positions - eef_pos, shape=(3,), units=m")
+
+    if resume_checkpoint is not None:
+        saved_shapes = resume_checkpoint["shape_metadata"]
+        expected = {key: tuple(shape) for key, shape in saved_shapes["all_shapes"].items()}
+        actual = {key: tuple(shape) for key, shape in shape_meta["all_shapes"].items()}
+        if actual != expected or shape_meta["ac_dim"] != saved_shapes["ac_dim"]:
+            raise ValueError("Dataset observation/action dimensions do not match the resumed checkpoint.")
+        shape_meta = saved_shapes
+        print(f"[RESUME] Saved epoch={start_epoch}; training epochs {start_epoch + 1}..{config.train.num_epochs}.")
+
+    state_keys = list(config.observation.modalities.obs.low_dim)
+    state_dim = sum(int(np.prod(shape_meta["all_shapes"][key])) for key in state_keys)
+    print(f"BC-RNN state_dim={state_dim}, normalize_obs={config.train.hdf5_normalize_obs}")
+    print(f"state_keys={state_keys}")
 
     if config.experiment.env is not None:
         env_meta["env_name"] = config.experiment.env
@@ -211,7 +241,7 @@ def train(config: Config, device: str, log_dir: str, ckpt_dir: str, video_dir: s
     )
 
     # save the config as a json file
-    with open(os.path.join(log_dir, "..", "config.json"), "w") as outfile:
+    with open(os.path.join(config.train.output_dir, "config.json"), "w") as outfile:
         json.dump(config, outfile, indent=4)
 
     print("\n============= Model Summary =============")
@@ -219,7 +249,7 @@ def train(config: Config, device: str, log_dir: str, ckpt_dir: str, video_dir: s
     print("")
 
     # load training data
-    trainset, validset = TrainUtils.load_data_for_training(config, obs_keys=shape_meta["all_obs_keys"])
+    trainset, validset = TrainUtils.load_data_for_training(config, obs_keys=dataset_obs_keys)
     train_sampler = trainset.get_dataset_sampler()
     print("\n============= Training Dataset =============")
     print(trainset)
@@ -228,9 +258,18 @@ def train(config: Config, device: str, log_dir: str, ckpt_dir: str, video_dir: s
     # maybe retrieve statistics for normalizing observations
     obs_normalization_stats = None
     if config.train.hdf5_normalize_obs:
-        obs_normalization_stats = trainset.get_obs_normalization_stats()
+        if resume_checkpoint is not None:
+            obs_normalization_stats = {
+                key: {field: np.asarray(values, dtype=np.float32) for field, values in stats.items()}
+                for key, stats in resume_checkpoint["obs_normalization_stats"].items()
+            }
+        else:
+            obs_normalization_stats = trainset.get_obs_normalization_stats()
+            if use_eef_to_toy:
+                obs_normalization_stats["eef_to_toy"] = eef_to_toy_normalization_stats(trainset)
 
     # initialize data loaders
+    collate_fn = collate_with_eef_to_toy if use_eef_to_toy else None
     train_loader = DataLoader(
         dataset=trainset,
         sampler=train_sampler,
@@ -238,6 +277,7 @@ def train(config: Config, device: str, log_dir: str, ckpt_dir: str, video_dir: s
         shuffle=(train_sampler is None),
         num_workers=config.train.num_data_workers,
         drop_last=True,
+        collate_fn=collate_fn,
     )
 
     if config.experiment.validate:
@@ -251,20 +291,27 @@ def train(config: Config, device: str, log_dir: str, ckpt_dir: str, video_dir: s
             shuffle=(valid_sampler is None),
             num_workers=num_workers,
             drop_last=True,
+            collate_fn=collate_fn,
         )
     else:
         valid_loader = None
 
     # main training loop
-    best_valid_loss = None
+    best_valid_loss = resume_checkpoint.get("best_valid_loss") if resume_checkpoint is not None else None
     last_ckpt_time = time.time()
+    if resume_checkpoint is not None:
+        restore_training_state(model, resume_checkpoint)
+        del resume_checkpoint
 
     # number of learning steps per epoch (defaults to a full dataset pass)
     train_num_steps = config.experiment.epoch_every_n_steps
     valid_num_steps = config.experiment.validation_epoch_every_n_steps
 
-    for epoch in range(1, config.train.num_epochs + 1):  # epoch numbers start at 1
-        step_log = TrainUtils.run_epoch(model=model, data_loader=train_loader, epoch=epoch, num_steps=train_num_steps)
+    for epoch in range(start_epoch + 1, config.train.num_epochs + 1):
+        step_log = TrainUtils.run_epoch(
+            model=model, data_loader=train_loader, epoch=epoch, num_steps=train_num_steps,
+            obs_normalization_stats=obs_normalization_stats,
+        )
         model.on_epoch_end(epoch)
 
         # setup checkpoint path
@@ -301,7 +348,8 @@ def train(config: Config, device: str, log_dir: str, ckpt_dir: str, video_dir: s
         if config.experiment.validate:
             with torch.no_grad():
                 step_log = TrainUtils.run_epoch(
-                    model=model, data_loader=valid_loader, epoch=epoch, validate=True, num_steps=valid_num_steps
+                    model=model, data_loader=valid_loader, epoch=epoch, validate=True, num_steps=valid_num_steps,
+                    obs_normalization_stats=obs_normalization_stats,
                 )
             for k, v in step_log.items():
                 if k.startswith("Time_"):
@@ -323,12 +371,14 @@ def train(config: Config, device: str, log_dir: str, ckpt_dir: str, video_dir: s
 
         # Save model checkpoints based on conditions (success rate, validation loss, etc)
         if should_save_ckpt:
-            TrainUtils.save_model(
+            save_training_checkpoint(
                 model=model,
                 config=config,
                 env_meta=env_meta,
                 shape_meta=shape_meta,
                 ckpt_path=os.path.join(ckpt_dir, epoch_ckpt_name + ".pth"),
+                epoch=epoch,
+                best_valid_loss=best_valid_loss,
                 obs_normalization_stats=obs_normalization_stats,
             )
 
@@ -342,6 +392,18 @@ def train(config: Config, device: str, log_dir: str, ckpt_dir: str, video_dir: s
     data_logger.close()
 
 
+#########################
+# command line
+#########################
+
+def parse_bool(value):
+    if value.lower() in ("true", "1"):
+        return True
+    if value.lower() in ("false", "0"):
+        return False
+    raise argparse.ArgumentTypeError("Use True or False.")
+
+
 def main(args: argparse.Namespace):
     """Train a model on a task using a specified algorithm.
 
@@ -349,7 +411,15 @@ def main(args: argparse.Namespace):
         args: Command line arguments.
     """
     # load config
-    if args.task is not None:
+    resume_checkpoint = None
+    if args.resume is not None:
+        config, resume_checkpoint = load_resume_checkpoint(args.resume)
+        if args.algo is not None and args.algo != config.algo_name:
+            raise ValueError("--algo must match the resumed checkpoint algorithm.")
+        if args.normalize_training_actions:
+            raise ValueError("Resume uses the saved action scaling. Use its dataset without --normalize_training_actions.")
+        print(f"[RESUME] Loading {Path(args.resume).expanduser().resolve()}")
+    elif args.task is not None:
         # obtain the configuration entry point
         cfg_entry_point_key = f"robomimic_{args.algo}_cfg_entry_point"
         task_name = args.task.split(":")[-1]
@@ -386,20 +456,26 @@ def main(args: argparse.Namespace):
     else:
         raise ValueError("Please provide a task name through CLI arguments.")
 
-    if args.dataset is not None:
-        config.train.data = args.dataset
+    with config.values_unlocked():
+        if args.dataset is not None:
+            config.train.data = args.dataset
+        if args.name is not None:
+            config.experiment.name = args.name
+        if args.epochs is not None:
+            config.train.num_epochs = args.epochs
+        if args.hdf5_normalize_obs is not None:
+            if resume_checkpoint is not None and args.hdf5_normalize_obs != config.train.hdf5_normalize_obs:
+                raise ValueError("Observation normalization must match the resumed checkpoint. Start a new run to change it.")
+            config.train.hdf5_normalize_obs = args.hdf5_normalize_obs
+        start_epoch = resume_checkpoint["epoch"] if resume_checkpoint is not None else 0
+        if config.train.num_epochs <= start_epoch:
+            raise ValueError(f"--epochs is the final epoch and must exceed saved epoch {start_epoch}.")
 
-    if args.name is not None:
-        config.experiment.name = args.name
-
-    if args.epochs is not None:
-        config.train.num_epochs = args.epochs
-
-    # change location of experiment directory
-    output_dir = args.output_dir or os.path.join("./logs", "robomimic", args.task)
-    config.train.output_dir = os.path.abspath(os.path.expanduser(output_dir))
-
-    log_dir, ckpt_dir, video_dir = TrainUtils.get_exp_dir(config)
+        output_dir = args.output_dir
+        if output_dir is None and resume_checkpoint is None:
+            output_dir = os.path.join("./logs", "robomimic", args.task)
+        output_dir, log_dir, ckpt_dir = get_output_dirs(output_dir, args.resume)
+        config.train.output_dir = output_dir
 
     if args.normalize_training_actions:
         config.train.data = normalize_hdf5_actions(config, log_dir)
@@ -412,7 +488,7 @@ def main(args: argparse.Namespace):
     # catch error during training and print it
     res_str = "finished run successfully!"
     try:
-        train(config, device, log_dir, ckpt_dir, video_dir)
+        train(config, device, log_dir, ckpt_dir, resume_checkpoint=resume_checkpoint)
     except Exception as e:
         res_str = f"run failed with error:\n{e}\n\n{traceback.format_exc()}"
     print(res_str)
@@ -439,18 +515,22 @@ if __name__ == "__main__":
 
     parser.add_argument("--task", type=str, default=None, help="Name of the task.")
     parser.add_argument("--algo", type=str, default=None, help="Name of the algorithm.")
+    parser.add_argument("--resume", type=str, default=None, help="Resume a robomimic checkpoint using its saved configuration.")
     parser.add_argument(
         "--output_dir", type=str, default=None,
-        help="Root directory for training results. Default: ./logs/robomimic/<task>.",
+        help="Save models, config.json, log.txt and tb/ directly here. Resume defaults to the checkpoint's existing directory.",
     )
     parser.add_argument("--normalize_training_actions", action="store_true", default=False, help="Normalize actions")
+    parser.add_argument(
+        "--norm", dest="hdf5_normalize_obs", type=parse_bool, default=None,
+        help="Normalize observations with training mean/std. Default: False in the JSON, or the checkpoint setting on resume.",
+    )
     parser.add_argument(
         "--epochs",
         type=int,
         default=None,
         help=(
-            "Optional: Number of training epochs. If specified, overrides the number of epochs from the JSON training"
-            " config."
+            "Final training epoch, not additional epochs. Overrides the JSON or resumed checkpoint target."
         ),
     )
 

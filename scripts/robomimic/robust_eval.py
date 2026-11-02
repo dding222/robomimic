@@ -88,6 +88,7 @@ import torch
 
 import isaaclab_tasks  # noqa: F401
 import agibot_toy2box  # noqa: F401
+from agibot_toy2box.rnn_observations import eef_to_toy
 from isaaclab_tasks.utils import parse_env_cfg
 
 
@@ -114,6 +115,8 @@ def rollout(policy, env: gym.Env, success_term, horizon: int, device: torch.devi
         obs = copy.deepcopy(obs_dict["policy"])
         for ob in obs:
             obs[ob] = torch.squeeze(obs[ob])
+        if "eef_to_toy" in policy.policy.obs_shapes:
+            obs["eef_to_toy"] = eef_to_toy(obs)
 
         # Check if environment image observations
         if hasattr(env.cfg, "image_obs_list"):

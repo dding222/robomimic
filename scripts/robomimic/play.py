@@ -12,7 +12,8 @@ Args:
     checkpoint: Path to the robomimic policy checkpoint.
     horizon: If provided, override the step horizon of each rollout.
     num_rollouts: If provided, override the number of rollouts.
-    seed: If provided, overeride the default random seed.
+    seed: Random seed for a single evaluation (default: 101).
+    seeds: Optional list of seeds; each runs num_rollouts episodes.
     norm_factor_min: If provided, minimum value of the action space normalization factor.
     norm_factor_max: If provided, maximum value of the action space normalization factor.
 """
@@ -24,7 +25,10 @@ import argparse
 
 from isaaclab.app import AppLauncher
 
-# add argparse arguments
+#########################
+# command line
+#########################
+
 parser = argparse.ArgumentParser(description="Evaluate robomimic policy for Isaac Lab environment.")
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
@@ -32,8 +36,11 @@ parser.add_argument(
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--checkpoint", type=str, default=None, help="Pytorch model checkpoint to load.")
 parser.add_argument("--horizon", type=int, default=800, help="Step horizon of each rollout.")
-parser.add_argument("--num_rollouts", type=int, default=1, help="Number of rollouts.")
-parser.add_argument("--seed", type=int, default=101, help="Random seed.")
+parser.add_argument("--num_rollouts", type=int, default=1, help="Number of rollouts per seed.")
+seed_args = parser.add_mutually_exclusive_group()
+seed_args.add_argument("--seed", type=int, default=101, help="Single evaluation seed. Default: 101.")
+seed_args.add_argument("--seeds", type=int, nargs="+", default=None,
+                       help="Evaluate each seed and report the mean/std of their success rates.")
 parser.add_argument(
     "--norm_factor_min", type=float, default=None, help="Optional: minimum value of the normalization factor."
 )
@@ -47,6 +54,13 @@ parser.add_argument("--enable_pinocchio", default=False, action="store_true", he
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
 args_cli = parser.parse_args()
+evaluation_seeds = args_cli.seeds if args_cli.seeds is not None else [args_cli.seed]
+if args_cli.num_rollouts < 1 or args_cli.horizon < 1:
+    parser.error("--num_rollouts and --horizon must be positive.")
+if any(seed < 0 or seed >= 2**32 for seed in evaluation_seeds):
+    parser.error("Seeds must be between 0 and 2**32 - 1.")
+if len(set(evaluation_seeds)) != len(evaluation_seeds):
+    parser.error("--seeds must contain unique seeds.")
 
 if args_cli.enable_pinocchio:
     # Import pinocchio before AppLauncher to force the use of the version
@@ -75,8 +89,14 @@ if args_cli.enable_pinocchio:
 
 import isaaclab_tasks  # noqa: F401
 import agibot_toy2box  # noqa: F401
+from agibot_toy2box.rnn_observations import eef_to_toy
+from isaaclab.sim import create_new_stage
 from isaaclab_tasks.utils import parse_env_cfg
 
+
+#########################
+# rollout
+#########################
 
 def rollout(policy, env, success_term, horizon, device):
     """Perform a single rollout of the policy in the environment.
@@ -88,7 +108,7 @@ def rollout(policy, env, success_term, horizon, device):
         device: The device to run the policy on.
 
     Returns:
-        terminated: Whether the rollout terminated.
+        success: Whether the rollout succeeded.
         traj: The trajectory of the rollout.
     """
     policy.start_episode()
@@ -100,6 +120,8 @@ def rollout(policy, env, success_term, horizon, device):
         obs = copy.deepcopy(obs_dict["policy"])
         for ob in obs:
             obs[ob] = torch.squeeze(obs[ob])
+        if "eef_to_toy" in policy.policy.obs_shapes:
+            obs["eef_to_toy"] = eef_to_toy(obs)
 
         # Check if environment image observations
         if hasattr(env.cfg, "image_obs_list"):
@@ -143,54 +165,70 @@ def rollout(policy, env, success_term, horizon, device):
     return False, traj
 
 
+#########################
+# seeded evaluation
+#########################
+
 def main():
-    """Run a trained policy from robomimic with Isaac Lab environment."""
-    # parse configuration
-    env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=1, use_fabric=not args_cli.disable_fabric)
-
-    # Set observations to dictionary mode for Robomimic
-    env_cfg.observations.policy.concatenate_terms = False
-
-    # Set termination conditions
-    env_cfg.terminations.time_out = None
-
-    # Disable recorder
-    env_cfg.recorders = None
-
-    # Extract success checking function
-    success_term = env_cfg.terminations.success
-    env_cfg.terminations.success = None
-
-    # Create environment
-    env = gym.make(args_cli.task, cfg=env_cfg).unwrapped
-
-    # Set seed
-    torch.manual_seed(args_cli.seed)
-    np.random.seed(args_cli.seed)
-    random.seed(args_cli.seed)
-    env.seed(args_cli.seed)
-
-    # Acquire device
+    """Evaluate independent seeds and summarize success rates and episode lengths."""
     device = TorchUtils.get_torch_device(try_to_use_cuda=True)
+    policy, _ = FileUtils.policy_from_checkpoint(ckpt_path=args_cli.checkpoint, device=device)
+    success_rates = []
+    episode_lengths = []
+    total_successes = 0
 
-    # Run policy
-    results = []
-    for trial in range(args_cli.num_rollouts):
-        print(f"[INFO] Starting trial {trial}")
-        policy, _ = FileUtils.policy_from_checkpoint(ckpt_path=args_cli.checkpoint, device=device)
-        terminated, traj = rollout(policy, env, success_term, args_cli.horizon, device)
-        results.append(terminated)
-        print(f"[INFO] Trial {trial}: {terminated}\n")
+    for seed_index, seed in enumerate(evaluation_seeds):
+        if seed_index:
+            create_new_stage()
+        env_cfg = parse_env_cfg(args_cli.task, device=args_cli.device, num_envs=1,
+                                use_fabric=not args_cli.disable_fabric)
+        env_cfg.seed = seed
+        env_cfg.observations.policy.concatenate_terms = False
+        env_cfg.terminations.time_out = None
+        env_cfg.recorders = None
+        success_term = env_cfg.terminations.success
+        env_cfg.terminations.success = None
 
-    print(f"\nSuccessful trials: {results.count(True)}, out of {len(results)} trials")
-    print(f"Success rate: {results.count(True) / len(results)}")
-    print(f"Trial Results: {results}\n")
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+        env = gym.make(args_cli.task, cfg=env_cfg).unwrapped
+        try:
+            env.seed(seed)
+            results = []
+            print(f"\n[INFO] Evaluation seed={seed}, rollouts={args_cli.num_rollouts}")
+            for trial in range(args_cli.num_rollouts):
+                print(f"[INFO] Starting trial {trial} (seed={seed})")
+                success, traj = rollout(policy, env, success_term, args_cli.horizon, device)
+                results.append(success)
+                episode_lengths.append(len(traj["actions"]))
+                print(f"[INFO] Trial {trial}: {success}\n")
 
-    env.close()
+            successes = results.count(True)
+            success_rates.append(successes / len(results))
+            total_successes += successes
+            print(f"[Seed {seed}]")
+            print(f"Successful trials: {successes}, out of {len(results)} trials")
+            print(f"Success rate: {success_rates[-1]}")
+            print(f"Trial Results: {results}\n")
+        finally:
+            env.close()
+            del env
+
+    mean_rate = float(np.mean(success_rates))
+    std_rate = float(np.std(success_rates, ddof=0))
+    print(f"\nEvaluation seeds: {evaluation_seeds}")
+    print(f"Rollouts per seed: {args_cli.num_rollouts}")
+    print(f"Total successful trials: {total_successes}, out of {len(episode_lengths)} trials")
+    print(f"Success rates by seed: {dict(zip(evaluation_seeds, success_rates))}")
+    print(f"Success rate mean ± std (across seeds, ddof=0): {mean_rate:.6f} ± {std_rate:.6f}")
+    print(f"Success rate percent: {mean_rate * 100:.2f}% ± {std_rate * 100:.2f} percentage points")
+    print(f"Episode length mean ± std (all rollouts, steps, ddof=0): "
+          f"{np.mean(episode_lengths):.2f} ± {np.std(episode_lengths, ddof=0):.2f}")
 
 
 if __name__ == "__main__":
-    # run the main function
-    main()
-    # close sim app
-    simulation_app.close()
+    try:
+        main()
+    finally:
+        simulation_app.close()

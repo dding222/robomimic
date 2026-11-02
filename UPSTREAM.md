@@ -23,6 +23,13 @@
 로컬 패키지로 독립 등록하기 위해 import 경로와 Gym task ID만 변경했고, 복사한 upstream 파일의
 저작권 및 SPDX header는 유지했다. 프로젝트 전체 라이선스 사본은 `LICENSE`에 있다.
 
+## BC-RNN
+
+- New training defaults match the 23-dimensional observation keys in the IsaacLab_RS Agibot BC configuration
+  and `output/bc_choi_gen/model_epoch_2000.pth`. Joint positions/velocities and relative position are excluded by default.
+- BC-RNN and ACT accept `--norm True/False`, defaulting to False.
+  Training statistics are saved and reused at inference. Resume preserves observation keys and normalization settings.
+
 ## ACT
 
 - Source: `/home/user/lerobot/src/lerobot/policies/act/modeling_act.py` and `configuration_act.py`
@@ -33,6 +40,9 @@
 - Destination: `source/toy2box_act/`
 - Adaptations: independent PyTorch policy/configuration, optional 0–3 cameras, state-only forward,
   raw 7-dimensional Toy2Box action output and robomimic SequenceDataset adapter.
+- New training uses the 23-dimensional low-dimensional keys from `output/bc_choi_gen/model_epoch_2000.pth`:
+  EEF pose, gripper state, toy pose and box pose. Joint positions/velocities are excluded.
+  Existing checkpoints keep their saved observation keys during playback and resume.
 - Transformer/CVAE/ResNet computation, padded masked L1 mean, KL loss and temporal ensemble follow the local ACT source.
   The camera backbone uses the original ResNet18 ImageNet initialization; state-only training creates no backbone.
 - The local LeRobot source includes custom debug-output changes; these are omitted from this adapter.
@@ -46,3 +56,5 @@
   Action sampling, episode boundaries and padding still use robomimic SequenceDataset.
   Training uses LeRobot's step-based schedule: 100,000 total updates, logging every 200 steps,
   and checkpointing every 1,000 steps plus the last step. The DataLoader cycle follows the local LeRobot implementation.
+- Resume restores model, optimizer, GradScaler, normalization, saved training settings and global step.
+  New checkpoints also preserve RNG states. DataLoader iteration restarts; resumed logs use a separate output folder.

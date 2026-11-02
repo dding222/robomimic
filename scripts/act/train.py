@@ -39,8 +39,11 @@ def parse_ensemble_coeff(value):
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", type=Path, required=True)
-    parser.add_argument("--output_dir", type=Path, default=Path("logs/act"))
+    parser.add_argument("--dataset", type=Path, default=None,
+                        help="HDF5 dataset; defaults to the checkpoint dataset when resuming.")
+    parser.add_argument("--output_dir", type=Path, default=None,
+                        help="Default: logs/act, or a resume_step_<step> folder beside the checkpoint.")
+    parser.add_argument("--resume", type=Path, default=None, help="Resume an ACT step checkpoint.")
     parser.add_argument("--enable_cam", type=parse_bool, default=False)
     parser.add_argument("--cameras", "--camera_keys", dest="camera_keys", nargs="+", default=None,
                         help="Select eye, top, front. --camera_keys also accepts legacy HDF5 key names.")
@@ -48,11 +51,12 @@ def parse_args():
     parser.add_argument("--n_action_steps", type=int, default=None)
     parser.add_argument("--temporal_ensemble_coeff", type=parse_ensemble_coeff, default=0.01,
                         help="ACT temporal ensemble coefficient; default 0.01. Use None to disable.")
-    parser.add_argument("--hdf5_normalize_obs", type=parse_bool, default=None,
-                        help="Use robomimic observation mean/std. Default follows the BC-RNN JSON.")
+    parser.add_argument("--norm", dest="hdf5_normalize_obs", type=parse_bool, default=None,
+                        help="Normalize observations with training mean/std. Default: BC-RNN JSON (False), or checkpoint on resume.")
     parser.add_argument("--normalize_training_actions", action="store_true",
                         help="Use BC-RNN's dataset-wide scalar min/max action normalization.")
-    parser.add_argument("--steps", type=int, default=100_000)
+    parser.add_argument("--steps", type=int, default=None,
+                        help="Final total step, not additional steps. Default: 100000 or checkpoint target.")
     parser.add_argument("--log_freq", type=int, default=200)
     parser.add_argument("--save_freq", type=int, default=1000)
     parser.add_argument("--batch_size", type=int, default=100)
@@ -62,12 +66,34 @@ def parse_args():
                         help="Use LeRobot's optional automatic mixed precision; default False.")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=101)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.dataset is None and args.resume is None:
+        parser.error("--dataset is required unless --resume is provided")
+    return args
 
 
 #########################
 # training
 #########################
+
+def capture_rng_state(device):
+    numpy_state = np.random.get_state()
+    return {
+        "python": random.getstate(),
+        "numpy": (numpy_state[0], numpy_state[1].tolist(), *numpy_state[2:]),
+        "torch": torch.get_rng_state(),
+        "cuda": torch.cuda.get_rng_state(device) if device.type == "cuda" else None,
+    }
+
+
+def restore_rng_state(state, device):
+    random.setstate(state["python"])
+    algorithm, values, position, has_gauss, cached = state["numpy"]
+    np.random.set_state((algorithm, np.asarray(values, dtype=np.uint32), position, has_gauss, cached))
+    torch.set_rng_state(state["torch"])
+    if device.type == "cuda" and state["cuda"] is not None:
+        torch.cuda.set_rng_state(state["cuda"], device)
+
 
 def cycle(iterable):
     iterator = iter(iterable)
@@ -79,10 +105,34 @@ def cycle(iterable):
 
 
 def train(args):
+    checkpoint = None
+    start_step = 0
+    saved_train = {}
+    if args.resume is not None:
+        args.resume = args.resume.expanduser().resolve()
+        checkpoint = torch.load(args.resume, map_location="cpu", weights_only=True)
+        required = {"model", "state_dict", "optimizer", "step", "state_keys", "dataset"}
+        if not required.issubset(checkpoint):
+            raise ValueError("--resume requires an ACT step checkpoint with optimizer state.")
+        start_step = checkpoint["step"]
+        saved_train = checkpoint.get("train", {})
+        for key in ("batch_size", "num_workers", "lr", "seed", "use_amp", "log_freq", "save_freq"):
+            if key in saved_train:
+                setattr(args, key, saved_train[key])
+        if args.dataset is None:
+            args.dataset = Path(checkpoint["dataset"])
+    if args.steps is None:
+        args.steps = saved_train.get("steps", 100_000)
+    if args.output_dir is None:
+        args.output_dir = (args.resume.parent / f"resume_step_{start_step}"
+                           if args.resume is not None else Path("logs/act"))
+    args.output_dir = args.output_dir.expanduser().resolve()
     if args.steps < 1 or args.batch_size < 1 or args.save_freq < 1:
         raise ValueError("steps, batch_size and save_freq must be positive.")
     if args.num_workers < 0 or args.log_freq < 0:
         raise ValueError("num_workers and log_freq must be nonnegative.")
+    if args.steps <= start_step:
+        raise ValueError(f"--steps must exceed checkpoint step {start_step}.")
     if (args.output_dir / "metrics.csv").exists():
         raise FileExistsError("metrics.csv already exists; use a new --output_dir to preserve the previous run.")
     torch.manual_seed(args.seed)
@@ -92,21 +142,35 @@ def train(args):
     torch.backends.cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = True
     path = args.dataset.expanduser().resolve()
-    state_keys, camera_keys, state_dim = inspect_dataset(path, args.enable_cam, args.camera_keys)
-    config = ACTConfig(
-        state_dim=state_dim,
-        enable_cam=args.enable_cam,
-        camera_keys=camera_keys,
-        action_chunk=args.action_chunk,
-        n_action_steps=(args.n_action_steps if args.n_action_steps is not None else
-                        (1 if args.temporal_ensemble_coeff is not None else args.action_chunk)),
-        temporal_ensemble_coeff=args.temporal_ensemble_coeff,
-        hdf5_normalize_obs=(args.hdf5_normalize_obs if args.hdf5_normalize_obs is not None else
-                            rnn_train_config()["hdf5_normalize_obs"]),
-        normalize_training_actions=args.normalize_training_actions,
+    if checkpoint is None:
+        state_keys, camera_keys, state_dim = inspect_dataset(path, args.enable_cam, args.camera_keys)
+        config = ACTConfig(
+            state_dim=state_dim,
+            enable_cam=args.enable_cam,
+            camera_keys=camera_keys,
+            action_chunk=args.action_chunk,
+            n_action_steps=(args.n_action_steps if args.n_action_steps is not None else
+                            (1 if args.temporal_ensemble_coeff is not None else args.action_chunk)),
+            temporal_ensemble_coeff=args.temporal_ensemble_coeff,
+            hdf5_normalize_obs=(args.hdf5_normalize_obs if args.hdf5_normalize_obs is not None else
+                                rnn_train_config()["hdf5_normalize_obs"]),
+            normalize_training_actions=args.normalize_training_actions,
+        )
+    else:
+        config = ACTConfig.from_dict(checkpoint["model"])
+        if args.hdf5_normalize_obs is not None and args.hdf5_normalize_obs != config.hdf5_normalize_obs:
+            raise ValueError("Observation normalization must match the resumed checkpoint. Start a new run to change it.")
+        state_keys, camera_keys, state_dim = inspect_dataset(
+            path, config.enable_cam, config.camera_keys, state_keys=checkpoint["state_keys"],
+        )
+        if state_keys != checkpoint["state_keys"] or state_dim != config.state_dim:
+            raise ValueError("Dataset observations do not match the resumed ACT checkpoint.")
+    dataset = make_dataset(
+        path, state_keys, camera_keys, config.action_chunk,
+        config.hdf5_normalize_obs if checkpoint is None else False,
     )
-    dataset = make_dataset(path, state_keys, camera_keys, config.action_chunk, config.hdf5_normalize_obs)
-    stats = normalization_stats(dataset, state_keys, camera_keys, config.normalize_training_actions)
+    stats = (normalization_stats(dataset, state_keys, camera_keys, config.normalize_training_actions)
+             if checkpoint is None else checkpoint.get("normalization"))
     loader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers,
         collate_fn=partial(collate_batch, state_keys=state_keys, camera_keys=camera_keys),
@@ -115,6 +179,15 @@ def train(args):
     model = ACTPolicy(config, stats).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     grad_scaler = torch.amp.GradScaler(device.type, enabled=args.use_amp)
+    if checkpoint is not None:
+        model.load_state_dict(checkpoint.pop("state_dict"))
+        optimizer.load_state_dict(checkpoint.pop("optimizer"))
+        if args.use_amp and not checkpoint.get("grad_scaler"):
+            raise ValueError("AMP resume requires GradScaler state in the checkpoint.")
+        if "grad_scaler" in checkpoint:
+            grad_scaler.load_state_dict(checkpoint["grad_scaler"])
+        if "rng_state" in checkpoint:
+            restore_rng_state(checkpoint["rng_state"], device)
     optimizer.zero_grad()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     run_config = {
@@ -125,12 +198,17 @@ def train(args):
             "lr": args.lr, "seed": args.seed, "use_amp": args.use_amp, "device": str(device),
         },
     }
+    if args.resume is not None:
+        run_config["resume_from"] = str(args.resume)
     (args.output_dir / "config.json").write_text(json.dumps(run_config, indent=2))
     print(f"state_dim={state_dim}, action_dim=7, action_chunk={config.action_chunk}, cameras={camera_keys}")
+    print(f"state_keys={state_keys}")
     print(f"Normalization: observations={config.hdf5_normalize_obs}, actions={config.normalize_training_actions}")
     print(f"Temporal ensemble={config.temporal_ensemble_coeff}, n_action_steps={config.n_action_steps}")
     print(f"device={device}, batch_size={args.batch_size}, num_workers={args.num_workers}, "
           f"use_amp={args.use_amp}, steps={args.steps}, log_freq={args.log_freq}, save_freq={args.save_freq}")
+    if checkpoint is not None:
+        print(f"Resuming step {start_step}; next step={start_step + 1}, output_dir={args.output_dir}")
     try:
         with (args.output_dir / "metrics.csv").open("x", newline="") as metrics_file:
             writer = csv.DictWriter(metrics_file, fieldnames=["step", "loss", "l1", "kl", "data_s", "update_s"])
@@ -140,7 +218,7 @@ def train(args):
             model.train()
             totals = {"loss": 0.0, "l1": 0.0, "kl": 0.0, "data_s": 0.0, "update_s": 0.0}
             count = 0
-            for step in range(1, args.steps + 1):
+            for step in range(start_step + 1, args.steps + 1):
                 started = perf_counter()
                 sample = next(data_iter)
                 data_s = perf_counter() - started
@@ -178,6 +256,7 @@ def train(args):
                         "step": step,
                         "metrics": averages,
                         "normalization": stats,
+                        "rng_state": capture_rng_state(device),
                     }
                     checkpoint_path = args.output_dir / f"model_step_{step}.pt"
                     temporary = checkpoint_path.with_suffix(".tmp")

@@ -16,6 +16,11 @@ from robomimic.utils.dataset import SequenceDataset
 #########################
 
 CAMERA_KEYS = {"eye": "hand_eye_cam", "top": "top_cam", "front": "front_cam"}
+DEFAULT_STATE_KEYS = [
+    "eef_pos", "eef_quat", "gripper_pos",
+    "toy_truck_positions", "toy_truck_orientations",
+    "box_positions", "box_orientations",
+]
 
 
 def rnn_train_config():
@@ -23,10 +28,10 @@ def rnn_train_config():
     return json.loads(path.read_text())["train"]
 
 
-def inspect_dataset(path, enable_cam=False, camera_keys=None):
-    config_path = Path(__file__).parents[1] / "agibot_toy2box/agents/robomimic/bc_rnn_low_dim.json"
-    config = json.loads(config_path.read_text())
-    state_keys = config["observation"]["modalities"]["obs"]["low_dim"]
+def inspect_dataset(path, enable_cam=False, camera_keys=None, state_keys=None):
+    state_keys = list(DEFAULT_STATE_KEYS if state_keys is None else state_keys)
+    if not state_keys or len(set(state_keys)) != len(state_keys):
+        raise ValueError("State observation keys must be nonempty and unique.")
     with h5py.File(path, "r") as handle:
         demos = list(handle["data"].values())
         if not demos:
