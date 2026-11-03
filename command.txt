@@ -5,6 +5,8 @@ python -m pip install -e .
 
 play 커맨드
 =========
+
+## seed 101 ##
 python scripts/robomimic/play.py \
     --task Agibot-Toy2Box-RmpFlow-v0 \
     --device cuda \
@@ -12,6 +14,21 @@ python scripts/robomimic/play.py \
     --num_rollouts 100 \
     --headless \
     --checkpoint ./output/bc_choi_gen_26/model_epoch_2000.pth
+
+## seed 111 #
+python scripts/robomimic/play.py \
+    --task Agibot-Toy2Box-RmpFlow-v0 \
+    --device cuda \
+    --seed 42 \
+    --num_rollouts 100 \
+    --headless \
+    --checkpoint ./output/bc_choi_gen_26_111/model_epoch_2000.pth
+
+
+
+
+
+
 
 
 TELEOP PREVIEW
@@ -90,10 +107,14 @@ python scripts/robomimic/train.py \
 # 학습 seed: --seed 111 등으로 변경. 생략하면 JSON의 train.seed 사용(기본 101).
 # resume는 저장된 seed와 RNG 상태를 유지. 다른 --seed는 새 학습에서 지정.
 # --output_dir ./output/bc_run 이면 ./output/bc_run 바로 아래 저장. --name은 로그 표시용 이름.
-# BC-RNN 기본 obs: EEF·그리퍼·장난감·상자 23차원. joint_pos / joint_vel / eef_to_toy 제외.
+# BC-RNN 기본 obs: 기존 19차원 + eef_to_toy_distance(1) + grasp_rotation_error(1) = 21차원.
+# joint_pos / joint_vel / box_orientations / 기존 eef_to_toy(3)는 제외.
+# 거리 단위 m, 회전 오차 단위 rad. 기존 HDF5로 계산하므로 재수집 불필요.
+# 파지 회전 기준은 선택된 학습 데모의 첫 들어 올림 자세에서 추정하고 체크포인트에 저장.
+# play/resume은 저장된 기준을 그대로 복원. 기준 자세 추정에 쓸 데모가 없으면 오류로 중단.
 # 관측 정규화: --norm True / False. 기본 False.
 # True면 학습 데이터 mean/std로 정규화하고 체크포인트에 통계 저장. play에서 자동 적용.
-# 23차원 입력은 --resume 없이 새로 학습. 기존 체크포인트의 관측 구성은 유지.
+# 21차원 입력은 --resume 없이 새 output_dir로 학습. 기존 체크포인트의 관측 구성은 유지.
 
 # 1000 epoch 체크포인트에서 1001~2000 epoch 추가 학습
 python scripts/robomimic/train.py \
@@ -129,7 +150,7 @@ python scripts/robomimic/play.py \
 # 결과: seed별 성공 횟수·성공률·True/False 목록, seed 간 성공률 평균·표준편차(ddof=0).
 # seed가 하나면 seed 간 표준편차는 0. 에피소드 길이는 전체 rollout의 평균·표준편차(step) 출력.
 
-# IsaacLab_RS robomimic play와 같은 rollout별 영상 저장: 23/26/91차원 자동 선택
+# IsaacLab_RS robomimic play와 같은 rollout별 영상 저장: 체크포인트의 obs 차원 자동 선택
 python scripts/robomimic/play.py \
     --task Agibot-Toy2Box-RmpFlow-v0 \
     --checkpoint ./output/bc_choi_gen_26/model_epoch_2000.pth \
@@ -151,4 +172,4 @@ python scripts/robomimic/play.py \
 # rollout 종료 시 저장하며 --video_length는 각 영상 최대 길이. 평가 horizon과 별개.
 # headless에서도 reset 시작·완료, 100 step마다 진행률, MP4 인코딩 시작·완료 로그 출력.
 # 모델 로더는 BC-RNN 전용. 현재 학습 JSON 대신 체크포인트의 obs/정규화 설정을 사용.
-# eef_to_toy는 해당 모델이 요구할 때만 계산. 23/26/91차원을 고르는 별도 옵션은 필요 없음.
+# 파생 obs는 해당 모델이 요구할 때만 계산. 19/21/23/26/91/94차원을 고르는 옵션은 필요 없음.
