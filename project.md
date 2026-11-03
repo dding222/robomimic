@@ -84,10 +84,27 @@ play에서도 동일하게 적용한다. 시퀀스 샘플링과 패딩은 robomi
 상대 위치 관측 코드는 유지한다. BC JSON에 `eef_to_toy`를 추가하면
 `toy_truck_positions - eef_pos`를 기존 HDF5에서 계산하며 play에서도 같은 계산을 사용한다.
 
+BC 새 학습의 seed는 `scripts/robomimic/train.py --seed 111`처럼 지정한다. 생략하면 JSON의
+`train.seed`(기본 101)를 사용하며, 적용된 값은 `config.json`과 체크포인트에 저장한다.
+Resume에서는 저장된 seed와 RNG 상태를 유지한다. 다른 seed로 학습하려면 resume 없이 새 실행을 시작한다.
+
 BC 평가에서는 `scripts/robomimic/play.py --seed 101`로 평가 seed를 지정한다(기본 101).
 `--seeds 101 102 103 --num_rollouts 50`은 seed별로 환경을 새로 생성해 각각 50회, 총 150회 평가한다.
 환경 생성 전부터 seed를 적용하며, 결과에는 seed별 성공률과 seed 간 성공률 평균·표준편차(`ddof=0`),
 전체 rollout의 에피소드 길이 평균·표준편차가 출력된다. seed가 하나일 때 seed 간 표준편차는 0이다.
+
+BC `play.py`의 rollout 평가와 Viewer 녹화는 로컬
+`IsaacLab_RS/scripts/imitation_learning/robomimic/play.py`를 기준으로 한다.
+`--video --num_rollouts 100 --headless`이면 rollout마다 별도 영상을 저장한다.
+각 영상은 rollout 종료 또는 `--video_length` 도달 시 저장하며, 기본 최대 길이는 800 step이다.
+저장 폴더는 `./videos/robomimic`이며 `--video_folder ./videos/bc_run`으로 변경한다.
+기존 `--video_dir`도 같은 옵션으로 지원하며 폴더가 없으면 자동 생성한다.
+파일명은 `<모델명>-seed-<seed>-episode-<trial>.mp4`이고, 영상 길이는 평가 horizon을 줄이지 않는다.
+기존 시드별 통계와 `--real-time` 재생 옵션은 유지한다.
+Reset과 step은 동일한 추론 모드에서 수행한다. Headless 진행 상황을 확인할 수 있도록 reset 시작·완료,
+100 step 간격 진행률, 동기식 MP4 인코딩 시작·완료를 로그에 출력한다.
+robomimic BC-RNN 로더는 현재 학습 JSON을 읽지 않고 체크포인트의
+관측 키·차원·정규화를 복원한다. 23/26/91차원을 자동으로 처리하고 `eef_to_toy`는 필요할 때만 계산한다.
 
 BC 학습 결과는 ACT처럼 `--output_dir` 바로 아래에 `model_epoch_XXXX.pth`, `config.json`,
 `log.txt`, TensorBoard `tb/`로 저장한다. 실험명·timestamp·models·logs 중간 폴더는 만들지 않는다.

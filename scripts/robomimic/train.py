@@ -37,6 +37,7 @@ Args:
     task: Name of the environment.
     name: If provided, override the experiment name defined in the config.
     dataset: If provided, override the dataset path defined in the config.
+    seed: If provided, override the JSON seed for a new training run.
     output_dir: Directory to save models, configuration and logs directly.
     normalize_training_actions: Whether to normalize actions in the training data.
 
@@ -163,6 +164,8 @@ def train(config: Config, device: str, log_dir: str, ckpt_dir: str, resume_check
         logger = PrintLogger(os.path.join(log_dir, "log.txt"))
         sys.stdout = logger
         sys.stderr = logger
+
+    print(f"Training seed={config.train.seed}")
 
     # read config to set up metadata for observation modalities (e.g. detecting rgb observations)
     ObsUtils.initialize_obs_utils_with_config(config)
@@ -463,6 +466,12 @@ def main(args: argparse.Namespace):
             config.experiment.name = args.name
         if args.epochs is not None:
             config.train.num_epochs = args.epochs
+        if args.seed is not None:
+            if not 0 <= args.seed < 2**32:
+                raise ValueError("--seed must be between 0 and 2**32 - 1.")
+            if resume_checkpoint is not None and args.seed != config.train.seed:
+                raise ValueError("--seed must match the resumed checkpoint. Start a new run to change the seed.")
+            config.train.seed = args.seed
         if args.hdf5_normalize_obs is not None:
             if resume_checkpoint is not None and args.hdf5_normalize_obs != config.train.hdf5_normalize_obs:
                 raise ValueError("Observation normalization must match the resumed checkpoint. Start a new run to change it.")
@@ -515,6 +524,10 @@ if __name__ == "__main__":
 
     parser.add_argument("--task", type=str, default=None, help="Name of the task.")
     parser.add_argument("--algo", type=str, default=None, help="Name of the algorithm.")
+    parser.add_argument(
+        "--seed", type=int, default=None,
+        help="Training seed. Defaults to the JSON value (101), or the checkpoint seed on resume.",
+    )
     parser.add_argument("--resume", type=str, default=None, help="Resume a robomimic checkpoint using its saved configuration.")
     parser.add_argument(
         "--output_dir", type=str, default=None,
@@ -534,9 +547,8 @@ if __name__ == "__main__":
         ),
     )
 
-    args = parser.parse_args()
-
-    # run training
-    main(args)
-    # close sim app
-    simulation_app.close()
+    try:
+        args = parser.parse_args()
+        main(args)
+    finally:
+        simulation_app.close()

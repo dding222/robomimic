@@ -18,10 +18,12 @@
 | `scripts/teleoperation/` | `scripts/environments/teleoperation/teleop_se3_agent.py`, `scripts/tools/record_demos.py`, `scripts/tools/replay_demos.py` |
 | `scripts/isaaclab_mimic/` | `scripts/imitation_learning/isaaclab_mimic/` |
 | `scripts/robomimic/` | `scripts/imitation_learning/robomimic/` |
+| `scripts/robomimic/play.py`의 rollout별 영상 녹화 | 로컬 `IsaacLab_RS/scripts/imitation_learning/robomimic/play.py` |
 | `docs/` | Isaac Lab imitation-learning 문서와 Isaac Lab Mimic changelog |
 
-로컬 패키지로 독립 등록하기 위해 import 경로와 Gym task ID만 변경했고, 복사한 upstream 파일의
-저작권 및 SPDX header는 유지했다. 프로젝트 전체 라이선스 사본은 `LICENSE`에 있다.
+로컬 패키지로 독립 등록하기 위해 import 경로와 Gym task ID를 변경했다. 추가 학습·재생 변경은
+아래에 기록하며, 복사한 upstream 파일의 저작권 및 SPDX header는 유지했다.
+프로젝트 전체 라이선스 사본은 `LICENSE`에 있다.
 
 ## BC-RNN
 
@@ -29,6 +31,15 @@
   and `output/bc_choi_gen/model_epoch_2000.pth`. Joint positions/velocities and relative position are excluded by default.
 - BC-RNN and ACT accept `--norm True/False`, defaulting to False.
   Training statistics are saved and reused at inference. Resume preserves observation keys and normalization settings.
+- Playback evaluation and per-rollout video recording follow the local
+  `IsaacLab_RS/scripts/imitation_learning/robomimic/play.py`: every episode triggers recording,
+  and each rollout explicitly stops and saves its video. Video length defaults to 800 steps and
+  `--video_folder` defaults to `./videos/robomimic`; `--video_dir` remains an alias.
+  The robomimic BC-RNN loader retains saved observation keys, dimensions and normalization.
+  The adapter supports state dimensions 23/26/91 and derives `eef_to_toy` only when the checkpoint requires it.
+  Existing seed-based evaluation, statistics, progress logs and optional `--real-time` pacing remain.
+  Model/seed/episode filenames distinguish rollouts. The policy is loaded once and its RNN state is
+  reset for every rollout. Video length caps each clip without shortening evaluation.
 
 ## ACT
 

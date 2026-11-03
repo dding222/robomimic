@@ -93,7 +93,6 @@
                     "toy_truck_positions",
                     "toy_truck_orientations",
                     "box_positions",
-                    "box_orientations",
                     "eef_to_toy"
                 ],
                 "rgb": [],

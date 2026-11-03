@@ -1,3 +1,19 @@
+play 커맨드
+
+python scripts/robomimic/play.py \
+    --task Agibot-Toy2Box-RmpFlow-v0 \
+    --device cuda \
+    --seed 42 \
+    --num_rollouts 100 \
+    --headless \
+    --checkpoint ./output/bc_choi_gen_26/model_epoch_2000.pth
+
+
+
+
+
+
+
 SETUP
 =====
 
@@ -60,19 +76,6 @@ python scripts/isaaclab_mimic/annotate_demos.py \
     --input_file ./datasets/toy2box_raw.hdf5 \
     --output_file ./datasets/toy2box_annotated.hdf5
 
-
-GENERATE A SMALL CHECK DATASET
-==============================
-
-python scripts/isaaclab_mimic/generate_dataset.py \
-    --task Agibot-Toy2Box-RmpFlow-Mimic-v0 \
-    --device cpu \
-    --num_envs 10 \
-    --generation_num_trials 10 \
-    --input_file ./datasets/toy2box_annotated.hdf5 \
-    --output_file ./datasets/toy2box_generated_small.hdf5
-
-
 GENERATE THE TRAINING DATASET
 =============================
 
@@ -93,14 +96,17 @@ python scripts/robomimic/train.py \
     --task Agibot-Toy2Box-RmpFlow-v0 \
     --algo bc \
     --epochs 2000 \
+    --seed 101 \
     --dataset ./datasets/toy2box_generated.hdf5 \
     --norm False \
     --output_dir ./output/gen_
 
 # 저장: <output_dir>/model_epoch_XXXX.pth, config.json, log.txt, tb/
+# 학습 seed: --seed 111 등으로 변경. 생략하면 JSON의 train.seed 사용(기본 101).
+# resume는 저장된 seed와 RNG 상태를 유지. 다른 --seed는 새 학습에서 지정.
 # --output_dir ./output/bc_run 이면 ./output/bc_run 바로 아래 저장. --name은 로그 표시용 이름.
-# BC-RNN / ACT 기본 obs: EEF·그리퍼·장난감·상자 23차원. joint_pos / joint_vel / eef_to_toy 제외.
-# 관측 정규화: 두 모델 모두 --norm True / False. 기본 False.
+# BC-RNN 기본 obs: EEF·그리퍼·장난감·상자 23차원. joint_pos / joint_vel / eef_to_toy 제외.
+# 관측 정규화: --norm True / False. 기본 False.
 # True면 학습 데이터 mean/std로 정규화하고 체크포인트에 통계 저장. play에서 자동 적용.
 # 23차원 입력은 --resume 없이 새로 학습. 기존 체크포인트의 관측 구성은 유지.
 
@@ -129,80 +135,35 @@ PLAY A CHECKPOINT
 python scripts/robomimic/play.py \
     --task Agibot-Toy2Box-RmpFlow-v0 \
     --device cuda \
-    --seed 101 \
-    --num_rollouts 20 \
+    --seed 42 \
+    --num_rollouts 100 \
     --checkpoint /ABSOLUTE/PATH/TO/model_epoch_XXXX.pth
-
-# 여러 seed의 성공률 평균·표준편차 평가: seed당 50회, 아래 예시는 총 150회
-python scripts/robomimic/play.py \
-    --task Agibot-Toy2Box-RmpFlow-v0 \
-    --device cuda \
-    --headless \
-    --seeds 101 102 103 \
-    --num_rollouts 50 \
-    --checkpoint ./output/bc_choi_gen_23/model_epoch_2000.pth
 
 # --seed 기본값 101. --seed와 --seeds 중 하나만 지정.
 # seed별 환경을 새로 생성하며 생성 전부터 seed 적용. 학습 seed와 평가 seed는 별개.
 # 결과: seed별 성공 횟수·성공률·True/False 목록, seed 간 성공률 평균·표준편차(ddof=0).
 # seed가 하나면 seed 간 표준편차는 0. 에피소드 길이는 전체 rollout의 평균·표준편차(step) 출력.
 
-
-TRAIN ACT
-==========
-
-# IsaacLab conda 환경에서 최초 한 번 (카메라 사용 시 호환되는 torch/torchvision 필요)
-python -m pip install -e '.[act]'
-
-# 카메라 없이 학습: 이미지 데이터/인코더/임베딩을 사용하지 않음
-python scripts/act/train.py \
-    --dataset ./datasets/toy2box_raw.hdf5 \
-    --enable_cam False \
-    --norm False \
-    --action_chunk 10 \
-    --seed 101 \
-    --steps 100000 \
-    --log_freq 100 \
-    --output_dir ./output/act_state
-
-# RGB를 수집한 데이터셋으로 세 카메라 학습
-python scripts/act/train.py \
-    --dataset ./datasets/toy2box_rgb.hdf5 \
-    --enable_cam True \
-    --cameras eye top front \
-    --action_chunk 10 \
-    --output_dir ./output/act_camera
-
-# --cameras는 eye/top/front 중 1~3개 지원. 생략하면 HDF5 RGB 관측 키를 자동 탐색.
-# 새 학습은 temporal ensemble 계수 0.01, n_action_steps=1이 기본
-# 끄기: --temporal_ensemble_coeff None (이때 n_action_steps 기본값은 action_chunk)
-# 관측 정규화는 BC-RNN과 같은 옵션: --norm True / False (기본 False)
-# action 정규화는 별도 옵션: --normalize_training_actions
-# --batch_size 100, --num_workers 4가 현재 기본값. --use_amp True로 원본의 선택적 AMP 활성화
-# 새 ACT 학습은 성공한 BC-RNN과 같은 obs 23차원 (EEF/그리퍼/장난감/상자), 관절 위치·속도 제외
-# 기존 obs 91차원 체크포인트는 --resume/play에서 기존 관측을 유지. obs 23차원은 새 output_dir로 새 학습
-# 기본 --steps 100000. 이전 --epoch/--epochs 대신 --steps 사용
-# 평균 지표: <output_dir>/metrics.csv (--log_freq 200 step마다 + 마지막)
-# 체크포인트: model_step_1000.pt, model_step_2000.pt, ... (--save_freq 1000 step마다 + 마지막)
-# latest.pt는 체크포인트 저장 시 갱신
-
-# 60,000 step 체크포인트에서 총 100,000 step까지 재개 (추가 40,000 step)
-# 데이터/모델/학습 설정 자동 복원. 기록은 원본 폴더 아래 resume_step_60000에 저장
-python scripts/act/train.py \
-    --resume ./output/act_base_gen_steps/model_step_60000.pt \
-    --steps 100000
-
-
-PLAY ACT
-=========
-
-python scripts/act/play.py \
+# IsaacLab_RS robomimic play와 같은 rollout별 영상 저장: 23/26/91차원 자동 선택
+python scripts/robomimic/play.py \
     --task Agibot-Toy2Box-RmpFlow-v0 \
-    --checkpoint ./output/act_state/latest.pt \
+    --checkpoint ./output/bc_choi_gen_26/model_epoch_2000.pth \
     --device cuda \
-    --headless \
-    --num_rollouts 50
+    --seed 42 \
+    --num_rollouts 100 \
+    --horizon 800 \
+    --video \
+    --video_length 1000 \
+    --video_folder ./videos/bc_choi_gen_26 \
+    --headless
 
-# 화면 없이 평가: --headless 추가. RGB 센서는 체크포인트 설정으로 자동 활성화.
-# 기존 ACT 모델에 ensemble 적용: --temporal_ensemble_coeff 0.01 추가
-# ensemble 끄기: --disable_temporal_ensemble
+# --video 기본 비활성. --video_length 기본 800 step. --real-time으로 실시간 재생 속도에 맞춤.
+# 기본 저장: ./videos/robomimic/<모델명>-seed-<seed>-episode-<trial>.mp4
+# --video_folder로 저장 폴더 지정. 기존 --video_dir도 같은 옵션. 폴더는 자동 생성.
+# 영상 파일은 지정한 폴더 바로 아래 저장.
+# Viewer 카메라 하나를 녹화하며 --video가 렌더링을 자동 활성화. 학습에 카메라 obs를 쓸 필요 없음.
+# rollout마다 별도 영상 저장. --num_rollouts 100이면 seed당 영상 100개.
+# rollout 종료 시 저장하며 --video_length는 각 영상 최대 길이. 평가 horizon과 별개.
+# headless에서도 reset 시작·완료, 100 step마다 진행률, MP4 인코딩 시작·완료 로그 출력.
+# 모델 로더는 BC-RNN 전용. 현재 학습 JSON 대신 체크포인트의 obs/정규화 설정을 사용.
+# eef_to_toy는 해당 모델이 요구할 때만 계산. 23/26/91차원을 고르는 별도 옵션은 필요 없음.
