@@ -2,6 +2,33 @@
 
 Isaac Lab v2.3.2의 **Agibot A2D Toy2Box** 작업에서 BC-RNN 정책을 학습하고, 관측 정보(Observation) 구성에 따른 물체 조작 성공률을 비교했다. 이미지 없이 로봇과 물체의 상태 정보만 사용했으며, 23차원 기본 관측에 상대 위치 또는 관절 상태를 추가했을 때의 성능을 평가했다.
 
+setup
+=====
+python -m pip install -e .
+
+
+play 커맨드
+=========
+
+## seed 101 ##
+python scripts/robomimic/play.py \
+    --task Agibot-Toy2Box-RmpFlow-v0 \
+    --device cuda \
+    --seed 42 \
+    --num_rollouts 100 \
+    --headless \
+    --checkpoint ./output/bc_choi_gen_26/model_epoch_2000.pth
+
+## seed 111 #
+python scripts/robomimic/play.py \
+    --task Agibot-Toy2Box-RmpFlow-v0 \
+    --device cuda \
+    --seed 42 \
+    --num_rollouts 100 \
+    --headless \
+    --checkpoint ./output/bc_choi_gen_26_111/model_epoch_2000.pth
+
+
 ## 1. 실험 구성
 
 | 모델 구성 | Observation | 차원 |
