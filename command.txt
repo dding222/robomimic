@@ -1,5 +1,10 @@
-play 커맨드
+setup
+=====
+python -m pip install -e .
 
+
+play 커맨드
+=========
 python scripts/robomimic/play.py \
     --task Agibot-Toy2Box-RmpFlow-v0 \
     --device cuda \
@@ -7,26 +12,6 @@ python scripts/robomimic/play.py \
     --num_rollouts 100 \
     --headless \
     --checkpoint ./output/bc_choi_gen_26/model_epoch_2000.pth
-
-
-
-
-
-
-
-SETUP
-=====
-
-conda activate isaaclab
-cd /home/user/package/robomimic
-
-source env.sh
-bash setup.sh
-
-# robomimic 모듈이 없을 때 Isaac Lab 루트에서 한 번 실행
-cd /home/user/package/IsaacLab
-./isaaclab.sh -i robomimic
-cd /home/user/package/robomimic
 
 
 TELEOP PREVIEW
