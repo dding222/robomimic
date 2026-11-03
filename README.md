@@ -147,15 +147,6 @@ Robomimic의 **Behavior Cloning + LSTM + GMM** 정책을 사용했다. LSTM은 �
 
 23-D 모델이 52%로 가장 높았고, 상대 위치 3차원을 추가한 26-D 모델은 49%를 기록했다. 관절 정보를 포함한 91-D 모델의 최고 성공률은 20%였다.
 
-### 5.3 Episode Length
-
-| 모델 | Evaluation seed | 성공률 | Episode length (mean ± std) |
-|---|---:|---:|---:|
-| `bc_choi_gen_91` | 42 | 20% (20/100) | 762.69 ± 80.11 steps |
-| `bc_choi_gen_101` | 42 | 36% (36/100) | 715.67 ± 115.99 steps |
-
-`bc_choi_gen_101`은 Observation 차원이 정리되지 않아 차원별 성공률 비교에서는 제외했다. 위 두 평가는 각각 seed 42에서 100회 수행한 결과다.
-
 ## 6. 실행 방법
 
 ### 설치
