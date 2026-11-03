@@ -4,13 +4,15 @@ Isaac Lab v2.3.2의 **Agibot A2D Toy2Box** 작업에서 BC-RNN 정책을 학습�
 
 setup
 =====
+```python
 python -m pip install -e .
-
+```
 
 play 커맨드
 =========
 
 ## seed 101 ##
+```python
 python scripts/robomimic/play.py \
     --task Agibot-Toy2Box-RmpFlow-v0 \
     --device cuda \
@@ -18,7 +20,8 @@ python scripts/robomimic/play.py \
     --num_rollouts 100 \
     --headless \
     --checkpoint ./output/bc_choi_gen_26/model_epoch_2000.pth
-
+```
+```python
 ## seed 111 #
 python scripts/robomimic/play.py \
     --task Agibot-Toy2Box-RmpFlow-v0 \
@@ -27,7 +30,7 @@ python scripts/robomimic/play.py \
     --num_rollouts 100 \
     --headless \
     --checkpoint ./output/bc_choi_gen_26_111/model_epoch_2000.pth
-
+```
 
 ## 1. 실험 구성
 
