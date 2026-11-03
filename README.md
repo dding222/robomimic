@@ -11,8 +11,8 @@ python -m pip install -e .
 play 커맨드
 =========
 
-## seed 101 ##
 ```python
+## seed 101 ##
 python scripts/robomimic/play.py \
     --task Agibot-Toy2Box-RmpFlow-v0 \
     --device cuda \
